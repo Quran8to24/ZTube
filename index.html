@@ -3,24 +3,58 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>My Videos</title>
+<title>ZTube</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  body{font-family:system-ui,sans-serif;margin:0;background:#0f0f0f;color:#f1f1f1}
-  nav{display:flex;gap:20px;padding:12px 20px;background:#181818;align-items:center}
-  nav a{color:inherit;text-decoration:none}
-  main{padding:20px;max-width:1000px;margin:0 auto}
-  input,button{padding:9px 14px;font-size:15px}
-  input{margin:0 8px 10px 0}
-  video{width:100%;max-width:640px;background:#000;border-radius:8px;display:block;margin-bottom:10px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
-  .card{background:#1f1f1f;padding:14px;border-radius:8px;color:inherit;text-decoration:none;display:block}
-  .tag{background:#c00;font-size:11px;padding:1px 6px;border-radius:4px}
-  .dim{opacity:.7;font-size:13px}.err{color:#ff8a80}
+  :root{--ink:#2d2a4a;--muted:#6b6890;--p1:#ff6ec4;--p2:#7873f5}
+  *{box-sizing:border-box}
+  body{font-family:'Poppins',system-ui,sans-serif;margin:0;color:var(--ink);min-height:100vh;
+       background:linear-gradient(160deg,#fff1f8 0%,#eef2ff 55%,#e6fbff 100%) fixed}
+  nav{display:flex;gap:22px;padding:0 24px;height:52px;background:#ffffffd9;backdrop-filter:blur(8px);
+      align-items:center;position:sticky;top:0;z-index:5;box-shadow:0 2px 14px #7873f526}
+  nav a{color:var(--ink);text-decoration:none;font-weight:500}
+  nav a:hover{color:var(--p2)}
+  nav a.brand{font-weight:700;font-size:20px;background:linear-gradient(90deg,var(--p1),var(--p2));
+      -webkit-background-clip:text;background-clip:text;color:transparent}
+  main{padding:24px;max-width:1000px;margin:0 auto}
+  h2,h3{margin:.4em 0}
+  a{color:var(--p2)}
+  button{border:0;border-radius:999px;padding:10px 22px;font:600 15px 'Poppins',system-ui,sans-serif;color:#fff;cursor:pointer;
+         background:linear-gradient(90deg,var(--p1),var(--p2));box-shadow:0 4px 14px #7873f540;transition:transform .15s}
+  button:hover{transform:translateY(-1px)}
+  button:disabled{opacity:.5;cursor:default;transform:none}
+  input{border:2px solid #e3e1fb;border-radius:12px;padding:10px 14px;font:15px 'Poppins',system-ui,sans-serif;
+        margin:0 8px 10px 0;background:#fff;color:var(--ink);outline:none}
+  input:focus{border-color:var(--p2)}
+  video{width:100%;max-width:640px;background:#1e1b4b;border-radius:16px;display:block;margin-bottom:12px;
+        box-shadow:0 10px 30px #7873f533}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:20px}
+  .card{background:#fff;border-radius:18px;overflow:hidden;color:inherit;text-decoration:none;display:block;
+        box-shadow:0 6px 20px #7873f524;transition:transform .2s,box-shadow .2s}
+  .card:hover{transform:translateY(-4px);box-shadow:0 12px 28px #7873f53d}
+  .thumb{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;font-size:38px;color:#fff;position:relative}
+  .dur{position:absolute;right:10px;bottom:8px;background:#0000008c;font-size:12px;padding:2px 8px;border-radius:999px}
+  .body{padding:12px 16px 14px}
+  .tag{background:linear-gradient(90deg,#ff6ec4,#ff9a44);color:#fff;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600}
+  .dim{color:var(--muted);font-size:13px}.err{color:#e11d48}
+  main.full{padding:0;max-width:none}
+  .reel{height:calc(100vh - 52px);height:calc(100dvh - 52px);overflow-y:scroll;scroll-snap-type:y mandatory;
+        background:linear-gradient(160deg,#6a11cb,#2575fc 60%,#ff6ec4)}
+  .slide{height:100%;scroll-snap-align:start;scroll-snap-stop:always;position:relative;display:flex;justify-content:center}
+  .slide::after{content:'';position:absolute;left:0;right:0;bottom:0;height:35%;
+        background:linear-gradient(transparent,#1e1b4bcc);pointer-events:none}
+  .slide video{height:100%;width:auto;max-width:100%;margin:0;border-radius:0;box-shadow:none;object-fit:contain}
+  .cap{position:absolute;z-index:2;left:18px;right:76px;bottom:22px;color:#fff;text-shadow:0 1px 4px #0008;pointer-events:none}
+  .cap .dim{color:#ffffffdd}
+  .cap a{pointer-events:auto;color:#fff;font-weight:600}
+  .snd{position:absolute;z-index:2;right:16px;bottom:26px;width:46px;height:46px;padding:0;font-size:20px;
+       background:#ffffff38;backdrop-filter:blur(6px);box-shadow:none}
 </style>
 </head>
 <body>
 <nav>
-  <a href="#/" style="font-weight:700">▶ My Videos</a>
+  <a href="#/" class="brand">▶ ZTube</a>
+  <a href="#/shorts">Shorts</a>
   <a href="#/record">Record / Upload</a>
   <span style="flex:1"></span>
   <span id="who" class="dim"></span>
@@ -48,8 +82,11 @@ async function route() {
   document.getElementById('who').textContent = user ? user.email : '';
   document.getElementById('out').style.display = user ? '' : 'none';
   const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
+  app.className = '';
   if (parts[0] === 'login') return loginPage();
   if (!user) { location.hash = '#/login'; return; }
+  app.className = parts[0] === 'shorts' ? 'full' : '';
+  if (parts[0] === 'shorts') return shortsPage();
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
   return homePage();
@@ -83,10 +120,14 @@ async function homePage() {
   const { data, error } = await sb.from('video_feed').select('*').order('created_at', { ascending: false });
   if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
   if (!data.length) return app.innerHTML = '<p>No videos yet. Go to Record / Upload to make the first one.</p>';
+  const hue = id => parseInt(id.slice(0, 4), 16) % 360;
   app.innerHTML = '<div class="grid">' + data.map(v => `
     <a class="card" href="#/watch/${esc(v.id)}">
-      <div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
-      <div class="dim" style="margin-top:6px">${esc(v.display_name || v.username)} · ${v.view_count} views · ${Math.round(v.duration_seconds)}s</div>
+      <div class="thumb" style="background:linear-gradient(135deg,hsl(${hue(v.id)},85%,68%),hsl(${(hue(v.id) + 60) % 360},85%,62%))">▶<span class="dur">${mm(v.duration_seconds)}</span></div>
+      <div class="body">
+        <div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
+        <div class="dim" style="margin-top:4px">${esc(v.display_name || v.username)} · ${v.view_count} views</div>
+      </div>
     </a>`).join('') + '</div>';
 }
 
@@ -203,6 +244,56 @@ async function watchPage(id) {
     if (error) return document.getElementById('msg').textContent = error.message;
     document.getElementById('txt').value = ''; load();
   };
+}
+
+/* ---------- Shorts (random order, swipe/scroll) ---------- */
+let soundOn = true;
+async function shortsPage() {
+  app.innerHTML = '<p class="dim" style="padding:20px">Loading shorts...</p>';
+  const { data, error } = await sb.from('video_feed').select('*').eq('is_short', true).limit(60);
+  if (error) return app.innerHTML = `<p class="err" style="padding:20px">${esc(error.message)}</p>`;
+  if (!data.length) return app.innerHTML = '<p style="padding:20px">No shorts yet. Record something under 1:40 and it shows up here.</p>';
+  // shuffle (Fisher-Yates) so the order is different every visit
+  for (let i = data.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [data[i], data[j]] = [data[j], data[i]]; }
+  const { data: urls } = await sb.storage.from('videos').createSignedUrls(data.map(v => v.video_path), 3600);
+  const urlFor = {}; (urls || []).forEach(u => { if (u.signedUrl) urlFor[u.path] = u.signedUrl; });
+  const list = data.filter(v => urlFor[v.video_path]);
+  if (!list.length) return app.innerHTML = '<p class="err" style="padding:20px">Could not load the short videos.</p>';
+
+  app.innerHTML = '<div class="reel">' + list.map(v => `
+    <section class="slide" data-id="${esc(v.id)}">
+      <video loop playsinline preload="metadata" src="${esc(urlFor[v.video_path])}"></video>
+      <div class="cap"><b>${esc(v.title)}</b><br><span class="dim">${esc(v.display_name || v.username)} · <a href="#/watch/${esc(v.id)}">comments</a></span></div>
+      <button class="snd">${soundOn ? '🔊' : '🔇'}</button>
+    </section>`).join('') + '</div>';
+
+  const reel = app.querySelector('.reel');
+  const counted = new Set();
+  function play(vid) {
+    vid.muted = !soundOn;
+    vid.play().catch(() => { vid.muted = true; vid.play().catch(() => {}); });
+  }
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      const vid = en.target.querySelector('video');
+      if (en.isIntersecting) {
+        play(vid);
+        const id = en.target.dataset.id;
+        if (!counted.has(id)) { counted.add(id); sb.rpc('increment_view', { p_video_id: id }); }
+      } else { vid.pause(); vid.currentTime = 0; }
+    });
+  }, { root: reel, threshold: 0.7 });
+  reel.querySelectorAll('.slide').forEach(sl => {
+    io.observe(sl);
+    const vid = sl.querySelector('video');
+    vid.onclick = () => vid.paused ? vid.play() : vid.pause();
+    sl.querySelector('.snd').onclick = () => {
+      soundOn = !soundOn;
+      reel.querySelectorAll('.snd').forEach(b => b.textContent = soundOn ? '🔊' : '🔇');
+      reel.querySelectorAll('video').forEach(x => x.muted = !soundOn);
+    };
+  });
+  cleanup = () => io.disconnect();
 }
 
 route();
