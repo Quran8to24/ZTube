@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Videos</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#0f0f0f;color:#f1f1f1}
+  nav{display:flex;gap:20px;padding:12px 20px;background:#181818;align-items:center}
+  nav a{color:inherit;text-decoration:none}
+  main{padding:20px;max-width:1000px;margin:0 auto}
+  input,button{padding:9px 14px;font-size:15px}
+  input{margin:0 8px 10px 0}
+  video{width:100%;max-width:640px;background:#000;border-radius:8px;display:block;margin-bottom:10px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+  .card{background:#1f1f1f;padding:14px;border-radius:8px;color:inherit;text-decoration:none;display:block}
+  .tag{background:#c00;font-size:11px;padding:1px 6px;border-radius:4px}
+  .dim{opacity:.7;font-size:13px}.err{color:#ff8a80}
+</style>
+</head>
+<body>
+<nav>
+  <a href="#/" style="font-weight:700">▶ My Videos</a>
+  <a href="#/record">Record / Upload</a>
+  <span style="flex:1"></span>
+  <span id="who" class="dim"></span>
+  <a href="#/login" id="out" style="display:none">Sign out</a>
+</nav>
+<main id="app"></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+const sb = supabase.createClient(
+  'https://ejwcxwzxlekoutknngtz.supabase.co',
+  'sb_publishable_b_XTX9vAZkQoW8TfafjMgQ_vn-nR0Ye'
+);
+const app = document.getElementById('app');
+const MAX_SECONDS = 300; // keeps recordings under the 50 MB free-tier file limit
+let user = null, cleanup = () => {};
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const mm = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+async function route() {
+  cleanup(); cleanup = () => {};
+  const { data } = await sb.auth.getSession();
+  user = data.session?.user || null;
+  document.getElementById('who').textContent = user ? user.email : '';
+  document.getElementById('out').style.display = user ? '' : 'none';
+  const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
+  if (parts[0] === 'login') return loginPage();
+  if (!user) { location.hash = '#/login'; return; }
+  if (parts[0] === 'record') return recordPage();
+  if (parts[0] === 'watch') return watchPage(parts[1]);
+  return homePage();
+}
+window.addEventListener('hashchange', route);
+document.getElementById('out').onclick = async () => { await sb.auth.signOut(); };
+sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') location.hash = '#/login'; });
+
+/* ---------- Login ---------- */
+function loginPage() {
+  app.innerHTML = `<div style="max-width:320px;margin:60px auto"><h2>Sign in</h2>
+    <input id="em" placeholder="Email" style="width:100%;box-sizing:border-box">
+    <input id="pw" type="password" placeholder="Password (6+ characters)" style="width:100%;box-sizing:border-box">
+    <button id="in">Sign in</button> <button id="up">Create account</button><p id="msg" class="err"></p></div>`;
+  const msg = document.getElementById('msg');
+  async function go(mode) {
+    msg.textContent = '';
+    const creds = { email: document.getElementById('em').value.trim(), password: document.getElementById('pw').value };
+    const { data, error } = mode === 'in' ? await sb.auth.signInWithPassword(creds) : await sb.auth.signUp(creds);
+    if (error) return msg.textContent = error.message;
+    if (mode === 'up' && !data.session) return msg.textContent = 'Account created. Check your email to confirm, then sign in.';
+    location.hash = '#/';
+  }
+  document.getElementById('in').onclick = () => go('in');
+  document.getElementById('up').onclick = () => go('up');
+}
+
+/* ---------- Home feed ---------- */
+async function homePage() {
+  app.innerHTML = '<p class="dim">Loading...</p>';
+  const { data, error } = await sb.from('video_feed').select('*').order('created_at', { ascending: false });
+  if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  if (!data.length) return app.innerHTML = '<p>No videos yet. Go to Record / Upload to make the first one.</p>';
+  app.innerHTML = '<div class="grid">' + data.map(v => `
+    <a class="card" href="#/watch/${esc(v.id)}">
+      <div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
+      <div class="dim" style="margin-top:6px">${esc(v.display_name || v.username)} · ${v.view_count} views · ${Math.round(v.duration_seconds)}s</div>
+    </a>`).join('') + '</div>';
+}
+
+/* ---------- Record / upload ---------- */
+function recordPage() {
+  app.innerHTML = `<h2>Record or upload</h2>
+    <video id="live" autoplay muted playsinline></video>
+    <p id="status"></p>
+    <div id="controls"><button id="start">Start camera &amp; record</button>
+      &nbsp;or pick a file: <input type="file" id="file" accept="video/mp4,video/webm,video/quicktime"></div>
+    <div id="review" style="display:none">
+      <video id="prev" controls playsinline></video>
+      <p id="info"></p>
+      <input id="title" placeholder="Title" style="width:300px">
+      <button id="upload">Upload</button> <button id="discard">Discard</button>
+    </div>
+    <p id="msg" class="err"></p>`;
+  const $ = id => document.getElementById(id);
+  let stream, rec, chunks = [], timer, blob, duration = 0;
+  cleanup = () => { clearInterval(timer); stream?.getTracks().forEach(t => t.stop()); };
+
+  function showReview(b, secs) {
+    blob = b; duration = secs;
+    $('live').style.display = 'none'; $('controls').style.display = 'none'; $('review').style.display = '';
+    $('prev').src = URL.createObjectURL(b);
+    $('info').textContent = `${mm(secs)} · ${secs < 100 ? 'This will be a SHORT' : 'Regular video'} · ${(b.size / 1048576).toFixed(1)} MB`;
+  }
+  function stop() {
+    clearInterval(timer);
+    if (rec && rec.state !== 'inactive') rec.stop();
+  }
+  $('start').onclick = async () => {
+    $('msg').textContent = '';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { height: 720 }, audio: true });
+      $('live').srcObject = stream;
+      const mime = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(t => MediaRecorder.isTypeSupported(t));
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 1000000 });
+      chunks = [];
+      rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+      const t0 = Date.now();
+      rec.onstop = () => {
+        const secs = (Date.now() - t0) / 1000;
+        stream.getTracks().forEach(t => t.stop());
+        $('status').textContent = '';
+        showReview(new Blob(chunks, { type: rec.mimeType }), secs);
+      };
+      rec.start(1000);
+      $('controls').innerHTML = '<button id="stop">Stop</button>';
+      $('stop').onclick = stop;
+      timer = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        $('status').textContent = `● Recording ${mm(s)} ${s < 100 ? '(short)' : '(over 1:40, regular video)'}`;
+        if (s >= MAX_SECONDS) stop();
+      }, 250);
+    } catch (e) { $('msg').textContent = 'Could not access camera/mic: ' + e.message; }
+  };
+  $('file').onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => { const d = v.duration; URL.revokeObjectURL(v.src); showReview(f, d); };
+    v.src = URL.createObjectURL(f);
+  };
+  $('discard').onclick = recordPage;
+  $('upload').onclick = async () => {
+    const title = $('title').value.trim();
+    if (!title) return $('msg').textContent = 'Add a title first.';
+    $('upload').disabled = true; $('msg').textContent = 'Uploading...';
+    const t = blob.type;
+    const ext = t.includes('mp4') ? 'mp4' : t.includes('quicktime') ? 'mov' : 'webm';
+    const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
+    const up = await sb.storage.from('videos').upload(path, blob, { contentType: t.split(';')[0] });
+    if (up.error) { $('upload').disabled = false; return $('msg').textContent = up.error.message; }
+    const { data, error } = await sb.from('videos')
+      .insert({ channel_id: user.id, title, video_path: path, duration_seconds: Math.max(duration, 0.1) })
+      .select('id').single();
+    if (error) { $('upload').disabled = false; return $('msg').textContent = error.message; }
+    location.hash = '#/watch/' + data.id;
+  };
+}
+
+/* ---------- Watch page ---------- */
+async function watchPage(id) {
+  app.innerHTML = '<p class="dim">Loading...</p>';
+  const { data: v, error } = await sb.from('video_feed').select('*').eq('id', id).single();
+  if (error) return app.innerHTML = `<p class="err">Could not load this video: ${esc(error.message)}</p>`;
+  const { data: s, error: se } = await sb.storage.from('videos').createSignedUrl(v.video_path, 3600);
+  app.innerHTML = `${se ? `<p class="err">Could not get the video file: ${esc(se.message)}</p>` : `<video id="player" controls autoplay playsinline style="max-width:100%;max-height:70vh"></video>`}
+    <h2>${esc(v.title)}</h2>
+    <p class="dim">${esc(v.display_name || v.username)} · ${v.view_count} views · ${v.is_short ? 'Short' : 'Video'}</p>
+    <h3 id="count"></h3>
+    <input id="txt" placeholder="Add a comment" style="width:320px"><button id="post">Post</button>
+    <p id="msg" class="err"></p><div id="list"></div>`;
+  if (!se) document.getElementById('player').src = s.signedUrl;
+  sb.rpc('increment_view', { p_video_id: id });
+  sb.from('watch_history').upsert({ user_id: user.id, video_id: id, watched_at: new Date().toISOString() });
+
+  async function load() {
+    const { data } = await sb.from('comments').select('id, body, profiles(username, display_name)')
+      .eq('video_id', id).order('created_at', { ascending: true });
+    document.getElementById('count').textContent = `${(data || []).length} comments`;
+    document.getElementById('list').innerHTML = (data || [])
+      .map(c => `<p><b>${esc(c.profiles?.display_name || c.profiles?.username)}</b> ${esc(c.body)}</p>`).join('');
+  }
+  load();
+  const ch = sb.channel('comments-' + id)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments', filter: `video_id=eq.${id}` }, load)
+    .subscribe();
+  cleanup = () => sb.removeChannel(ch);
+  document.getElementById('post').onclick = async () => {
+    const body = document.getElementById('txt').value.trim(); if (!body) return;
+    const { error } = await sb.from('comments').insert({ video_id: id, user_id: user.id, body });
+    if (error) return document.getElementById('msg').textContent = error.message;
+    document.getElementById('txt').value = ''; load();
+  };
+}
+
+route();
+</script>
+</body>
+</html>
