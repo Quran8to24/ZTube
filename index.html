@@ -43,6 +43,13 @@
   .hl{background:linear-gradient(90deg,#ffd200,#ff9a44);color:#3b2300;padding:10px 14px;border-radius:14px;font-weight:600;
       box-shadow:0 6px 20px #0006;animation:pop .35s ease-out}
   @keyframes pop{from{transform:scale(.8) translateY(14px);opacity:0}to{transform:none;opacity:1}}
+  textarea{border:2px solid #e3e1fb;border-radius:12px;padding:10px 14px;font:15px 'Poppins',system-ui,sans-serif;background:#fff;color:var(--ink);outline:none;width:100%;max-width:420px}
+  textarea:focus{border-color:var(--p2)}
+  .av{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;color:#fff;font-weight:700;flex:none;overflow:hidden;background-size:cover;background-position:center}
+  .cw{position:relative}
+  .delbtn{position:absolute;top:8px;right:8px;width:34px;height:34px;padding:0;font-size:15px;background:#e11d48;z-index:2}
+  .chip{background:#fff;color:var(--ink);box-shadow:0 2px 8px #7873f526;padding:7px 16px}
+  .chip.on{background:linear-gradient(90deg,var(--p1),var(--p2));color:#fff}
   main.full{padding:0;max-width:none}
   .reel{height:calc(100vh - 52px);height:calc(100dvh - 52px);overflow-y:scroll;scroll-snap-type:y mandatory;
         background:linear-gradient(160deg,#6a11cb,#2575fc 60%,#ff6ec4)}
@@ -60,12 +67,14 @@
 <body>
 <nav>
   <a href="#/" class="brand">▶ ZTube</a>
+  <input id="q" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
   <a href="#/shorts">Shorts</a>
   <a href="#/live">🔴 Live</a>
   <a href="#/record">Record / Upload</a>
   <span style="flex:1"></span>
+  <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
   <span id="who" class="dim"></span>
-  <span class="dim" style="font-size:11px">build 8</span>
+  <span class="dim" style="font-size:11px">build 9</span>
   <a href="#/login" id="out" style="display:none">Sign out</a>
 </nav>
 <main id="app"></main>
@@ -84,7 +93,8 @@ async function route() {
   cleanup(); cleanup = () => {};
   const { data } = await sb.auth.getSession();
   user = data.session?.user || null;
-  document.getElementById('who').textContent = user ? user.email : '';
+  document.getElementById('me').style.display = user ? 'flex' : 'none';
+  if (user) loadMe(); else document.getElementById('who').textContent = '';
   document.getElementById('out').style.display = user ? '' : 'none';
   const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
   app.className = '';
@@ -97,6 +107,8 @@ async function route() {
   if (parts[0] === 'live') return parts[1] ? watchLivePage(parts[1]) : livePage();
   if (parts[0] === 'golive') return goLivePage();
   if (parts[0] === 'channel') return channelPage(parts[1]);
+  if (parts[0] === 'search') return searchPage(decodeURIComponent(parts.slice(1).join('/')));
+  if (parts[0] === 'settings') return settingsPage();
   return homePage();
 }
 window.addEventListener('hashchange', route);
@@ -125,16 +137,68 @@ function loginPage() {
 /* ---------- Shared helpers ---------- */
 function onLeave(fn) { const prev = cleanup; cleanup = () => { prev(); fn(); }; }
 const hue = id => parseInt(id.slice(0, 4), 16) % 360;
+const nameHue = str => [...String(str || '?')].reduce((n, c) => n + c.charCodeAt(0), 0) % 360;
+// round profile picture (or a colored circle with the first letter if there is no picture)
+function avHtml(path, name, size) {
+  const h = nameHue(name), letter = esc((name || '?').trim().charAt(0).toUpperCase() || '?');
+  return `<span class="av" ${path ? `data-av="${esc(path)}"` : ''} style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.45)}px;background-image:linear-gradient(135deg,hsl(${h},80%,65%),hsl(${(h + 50) % 360},80%,60%))">${letter}</span>`;
+}
+const avCache = {};
+async function fillAvatars() {
+  const els = [...document.querySelectorAll('[data-av]:not([data-done])')];
+  if (!els.length) return;
+  els.forEach(e => e.dataset.done = '1');
+  const need = [...new Set(els.map(e => e.dataset.av).filter(p => !avCache[p]))];
+  if (need.length) {
+    const { data } = await sb.storage.from('images').createSignedUrls(need, 3600);
+    (data || []).forEach(d => { if (d.signedUrl) avCache[d.path] = d.signedUrl; });
+  }
+  els.forEach(e => {
+    const u = avCache[e.dataset.av];
+    if (u) { e.style.backgroundImage = `url("${u}")`; e.textContent = ''; }
+  });
+}
+let myProfile = null, meFor = null;
+async function loadMe(force) {
+  if (!force && myProfile && meFor === user.id) return;
+  const { data } = await sb.from('profiles').select('username, display_name, avatar_path').eq('id', user.id).single();
+  if (!data) return;
+  myProfile = data; meFor = user.id;
+  const nm = data.display_name || data.username;
+  document.getElementById('who').textContent = nm;
+  const box = document.getElementById('meav');
+  box.innerHTML = avHtml(data.avatar_path, nm, 30);
+}
+async function deleteVideo(v) {
+  if (!confirm(`Delete "${v.title}"? This can't be undone.`)) return false;
+  const { data, error } = await sb.from('videos').delete().eq('id', v.id).select('id');
+  if (error || !data?.length) { alert("Couldn't delete: " + (error?.message || 'not allowed')); return false; }
+  await sb.storage.from('videos').remove([v.video_path]);
+  return true;
+}
+function wireDeletes(box, list) {
+  box.addEventListener('click', async e => {
+    const b = e.target.closest('[data-del]'); if (!b) return;
+    const v = list.find(x => x.id === b.dataset.del);
+    if (v && await deleteVideo(v)) b.closest('.cw')?.remove();
+  });
+}
 function cardsHtml(list) {
-  if (!list.length) return '<p>No videos yet.</p>';
-  return '<div class="grid">' + list.map(v => `
+  if (!list.length) return '<p class="dim">No videos yet.</p>';
+  return '<div class="grid">' + list.map(v => {
+    const nm = v.display_name || v.username;
+    return `<div class="cw">
     <a class="card" href="#/watch/${esc(v.id)}">
       <div class="thumb" style="background:linear-gradient(135deg,hsl(${hue(v.id)},85%,68%),hsl(${(hue(v.id) + 60) % 360},85%,62%))">▶<span class="dur">${mm(v.duration_seconds)}</span></div>
-      <div class="body">
-        <div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
-        <div class="dim" style="margin-top:4px">${esc(v.display_name || v.username)} · <span data-views="${esc(v.id)}">${v.view_count}</span> views</div>
+      <div class="body" style="display:flex;gap:10px">
+        ${avHtml(v.avatar_path, nm, 36)}
+        <div><div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
+        <div class="dim" style="margin-top:2px">${esc(nm)} · <span data-views="${esc(v.id)}">${v.view_count}</span> views</div></div>
       </div>
-    </a>`).join('') + '</div>';
+    </a>
+    ${v.channel_id === user.id ? `<button class="delbtn" data-del="${esc(v.id)}" title="Delete video">🗑</button>` : ''}
+    </div>`;
+  }).join('') + '</div>';
 }
 // view counts on any cards on screen update the moment someone watches
 function liveViews() {
@@ -144,13 +208,13 @@ function liveViews() {
     }).subscribe();
   onLeave(() => sb.removeChannel(ch));
 }
-// channel name + live subscriber count + subscribe button
-function channelBar(el, channelId, name) {
+// channel name + picture + live subscriber count + subscribe button (big = used inside the channel page header)
+function channelBar(el, channelId, name, avatarPath, big) {
   const mine = channelId === user.id;
   el.innerHTML = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:6px 0 14px">
-    <a href="#/channel/${esc(channelId)}" style="font-weight:600;font-size:17px;color:inherit;text-decoration:none">${esc(name)}</a>
+    ${big ? '' : `<a href="#/channel/${esc(channelId)}" style="display:flex;align-items:center;gap:10px;font-weight:600;font-size:17px;color:inherit;text-decoration:none">${avHtml(avatarPath, name, 40)}${esc(name)}</a>`}
     <span class="dim"><span id="subn">0</span> subscribers</span>
-    ${mine ? '' : '<button id="subbtn">Subscribe</button>'}</div>`;
+    ${mine ? (big ? '<a href="#/settings"><button>✏️ Edit profile</button></a>' : '') : '<button id="subbtn">Subscribe</button>'}</div>`;
   const nEl = el.querySelector('#subn'), btn = el.querySelector('#subbtn');
   let subbed = false;
   async function refresh() {
@@ -183,10 +247,92 @@ async function channelPage(id) {
   const { data: ch, error } = await sb.from('channels').select('*').eq('id', id).single();
   if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
   const { data: vids } = await sb.from('video_feed').select('*').eq('channel_id', id).order('created_at', { ascending: false });
-  app.innerHTML = '<div id="chan"></div><h3>Videos</h3><div id="vids"></div>';
-  channelBar(document.getElementById('chan'), id, ch.display_name || ch.username);
-  document.getElementById('vids').innerHTML = cardsHtml(vids || []);
+  const list = vids || [], nm = ch.display_name || ch.username;
+  app.innerHTML = `<div style="display:flex;align-items:center;gap:22px;flex-wrap:wrap;margin-bottom:8px">
+      ${avHtml(ch.avatar_path, nm, 96)}
+      <div><h2 style="margin:0">${esc(nm)}</h2>
+        <div class="dim">@${esc(ch.username)} · ${list.length} videos</div>
+        ${ch.bio ? `<p style="margin:8px 0;max-width:520px">${esc(ch.bio)}</p>` : ''}
+        <div id="chan"></div></div></div>
+    <div style="margin:10px 0"><button class="chip on" data-f="all">All</button> <button class="chip" data-f="video">Videos</button> <button class="chip" data-f="short">Shorts</button></div>
+    <div id="vids"></div>`;
+  channelBar(document.getElementById('chan'), id, nm, ch.avatar_path, true);
+  const box = document.getElementById('vids');
+  const show = f => { box.innerHTML = cardsHtml(list.filter(v => f === 'all' || (f === 'short') === v.is_short)); };
+  show('all'); wireDeletes(box, list);
+  app.querySelectorAll('[data-f]').forEach(b => b.onclick = () => {
+    app.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('on', x === b));
+    show(b.dataset.f);
+  });
   liveViews();
+}
+
+/* ---------- Search ---------- */
+async function searchPage(raw) {
+  const q = raw.replace(/[,()%_*\\]/g, ' ').trim();
+  const qi = document.getElementById('q'); if (qi) qi.value = q;
+  if (!q) return app.innerHTML = '<p class="dim">Type something in the search bar.</p>';
+  app.innerHTML = `<h2>Results for “${esc(q)}”</h2><div id="res"><p class="dim">Searching...</p></div>`;
+  const [vr, cr] = await Promise.all([
+    sb.from('video_feed').select('*').or(`title.ilike.%${q}%,description.ilike.%${q}%`).order('created_at', { ascending: false }).limit(60),
+    sb.from('channels').select('*').or(`display_name.ilike.%${q}%,username.ilike.%${q}%`).limit(20),
+  ]);
+  const res = document.getElementById('res'); if (!res) return;
+  if (vr.error || cr.error) return res.innerHTML = `<p class="err">${esc((vr.error || cr.error).message)}</p>`;
+  const vids = vr.data || [], chans = cr.data || [];
+  if (!vids.length && !chans.length) return res.innerHTML = '<p>Nothing found. Try a different word.</p>';
+  res.innerHTML = (chans.length ? '<h3>Channels</h3><div class="grid">' + chans.map(c => {
+      const nm = c.display_name || c.username;
+      return `<a class="card" href="#/channel/${esc(c.id)}" style="display:flex;align-items:center;gap:12px;padding:14px">
+        ${avHtml(c.avatar_path, nm, 52)}<div><div style="font-weight:600">${esc(nm)}</div><div class="dim">@${esc(c.username)} · ${c.subscriber_count} subscribers</div></div></a>`;
+    }).join('') + '</div>' : '') + (vids.length ? '<h3>Videos</h3><div id="vids"></div>' : '');
+  if (vids.length) {
+    const box = document.getElementById('vids');
+    box.innerHTML = cardsHtml(vids); wireDeletes(box, vids); liveViews();
+  }
+}
+
+/* ---------- Settings ---------- */
+async function settingsPage() {
+  const { data: me, error } = await sb.from('profiles').select('*').eq('id', user.id).single();
+  if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  const nm = me.display_name || me.username;
+  app.innerHTML = `<h2>Settings</h2>
+    <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:16px">
+      <span id="avbox">${avHtml(me.avatar_path, nm, 88)}</span>
+      <div><input type="file" id="pic" accept="image/png,image/jpeg,image/webp"><br><span class="dim">Profile picture (PNG, JPG or WebP, up to 5 MB)</span></div></div>
+    <p>Display name<br><input id="dn" maxlength="40" value="${esc(me.display_name || '')}"></p>
+    <p>Username<br><input id="un" maxlength="30" value="${esc(me.username)}"><br><span class="dim">Letters, numbers and underscores, 3 to 30 characters</span></p>
+    <p>Bio<br><textarea id="bio" maxlength="300" rows="3">${esc(me.bio || '')}</textarea></p>
+    <button id="save">Save</button> <a href="#/channel/${esc(user.id)}">View my channel</a>
+    <p id="msg" class="dim"></p>
+    <hr style="border:0;border-top:1px solid #e3e1fb;margin:20px 0">
+    <p class="dim">Signed in as ${esc(user.email)}</p><button id="so" style="background:#6b6890">Sign out</button>`;
+  const $ = id => document.getElementById(id);
+  const say = (t, bad) => { $('msg').className = bad ? 'err' : 'dim'; $('msg').textContent = t; };
+  $('so').onclick = () => sb.auth.signOut();
+  $('pic').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    if (f.size > 5 * 1024 * 1024) return say('Picture must be under 5 MB.', true);
+    const ext = f.type === 'image/png' ? 'png' : f.type === 'image/webp' ? 'webp' : 'jpg';
+    const path = `${user.id}/avatar-${Date.now()}.${ext}`;
+    say('Uploading...');
+    const up = await sb.storage.from('images').upload(path, f, { contentType: f.type });
+    if (up.error) return say(up.error.message, true);
+    const { error } = await sb.from('profiles').update({ avatar_path: path }).eq('id', user.id);
+    if (error) return say(error.message, true);
+    if (me.avatar_path) sb.storage.from('images').remove([me.avatar_path]);
+    me.avatar_path = path;
+    $('avbox').innerHTML = avHtml(path, $('dn').value.trim() || $('un').value, 88);
+    loadMe(true); say('Picture updated ✓');
+  };
+  $('save').onclick = async () => {
+    const username = $('un').value.trim(), display_name = $('dn').value.trim(), bio = $('bio').value.trim();
+    if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) return say('Username must be 3 to 30 letters, numbers or underscores.', true);
+    const { error } = await sb.from('profiles').update({ username, display_name: display_name || null, bio: bio || null }).eq('id', user.id);
+    if (error) return say(error.code === '23505' ? 'That username is taken.' : error.message, true);
+    myNameCache = null; loadMe(true); say('Saved ✓');
+  };
 }
 
 /* ---------- Home feed ---------- */
@@ -195,7 +341,9 @@ async function homePage() {
   const { data, error } = await sb.from('video_feed').select('*').order('created_at', { ascending: false });
   if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
   if (!data.length) return app.innerHTML = '<p>No videos yet. Go to Record / Upload to make the first one.</p>';
-  app.innerHTML = cardsHtml(data);
+  app.innerHTML = '<div id="vids"></div>';
+  const box = document.getElementById('vids');
+  box.innerHTML = cardsHtml(data); wireDeletes(box, data);
   liveViews();
 }
 
@@ -287,21 +435,23 @@ async function watchPage(id) {
   app.innerHTML = `${se ? `<p class="err">Could not get the video file: ${esc(se.message)}</p>` : `<video id="player" controls autoplay playsinline style="max-width:100%;max-height:70vh"></video>`}
     <h2>${esc(v.title)}</h2>
     <p class="dim"><span id="views">${v.view_count}</span> views · ${v.is_short ? 'Short' : 'Video'}</p>
+    ${v.channel_id === user.id ? '<button id="del" style="background:#e11d48;margin-bottom:8px">🗑 Delete video</button>' : ''}
     <div id="chan"></div>
     <h3 id="count"></h3>
     <input id="txt" placeholder="Add a comment" style="width:320px"><button id="post">Post</button>
     <p id="msg" class="err"></p><div id="list"></div>`;
   if (!se) document.getElementById('player').src = s.signedUrl;
-  channelBar(document.getElementById('chan'), v.channel_id, v.display_name || v.username);
+  channelBar(document.getElementById('chan'), v.channel_id, v.display_name || v.username, v.avatar_path);
+  document.getElementById('del')?.addEventListener('click', async () => { if (await deleteVideo(v)) location.hash = '#/'; });
   sb.rpc('increment_view', { p_video_id: id });
   sb.from('watch_history').upsert({ user_id: user.id, video_id: id, watched_at: new Date().toISOString() });
 
   async function load() {
-    const { data } = await sb.from('comments').select('id, body, profiles(username, display_name)')
+    const { data } = await sb.from('comments').select('id, body, profiles(username, display_name, avatar_path)')
       .eq('video_id', id).order('created_at', { ascending: true });
     document.getElementById('count').textContent = `${(data || []).length} comments`;
     document.getElementById('list').innerHTML = (data || [])
-      .map(c => `<p><b>${esc(c.profiles?.display_name || c.profiles?.username)}</b> ${esc(c.body)}</p>`).join('');
+      .map(c => { const nm = c.profiles?.display_name || c.profiles?.username; return `<div style="display:flex;gap:10px;margin:10px 0">${avHtml(c.profiles?.avatar_path, nm, 34)}<div><b>${esc(nm)}</b><br>${esc(c.body)}</div></div>`; }).join('');
   }
   load();
   const ch = sb.channel('comments-' + id)
@@ -582,7 +732,12 @@ async function boot() {
     'sb_publishable_b_XTX9vAZkQoW8TfafjMgQ_vn-nR0Ye',
     { auth: { storage: window.sessionStorage, storageKey: 'ztube-auth-' + id } }
   );
-  sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT') location.hash = '#/login'; });
+  sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT') { myProfile = null; location.hash = '#/login'; } });
+  new MutationObserver(() => fillAvatars()).observe(document.body, { childList: true, subtree: true });
+  document.getElementById('q').addEventListener('keydown', e => {
+    const v = e.target.value.trim();
+    if (e.key === 'Enter' && v) location.hash = '#/search/' + encodeURIComponent(v);
+  });
 }
 boot().then(route);
 </script>
