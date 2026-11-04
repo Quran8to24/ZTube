@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ZTube</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ff6ec4'/%3E%3Cstop offset='1' stop-color='%237873f5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M8 8h48v11L24 45h32v11H8V45l32-26H8z'/%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{--ink:#2d2a4a;--muted:#6b6890;--p1:#ff6ec4;--p2:#7873f5}
@@ -37,6 +38,11 @@
   .body{padding:12px 16px 14px}
   .tag{background:linear-gradient(90deg,#ff6ec4,#ff9a44);color:#fff;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600}
   .dim{color:var(--muted);font-size:13px}.err{color:#e11d48}
+  .vwrap{position:relative;max-width:640px}
+  .pop{position:absolute;left:12px;right:12px;bottom:56px;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+  .hl{background:linear-gradient(90deg,#ffd200,#ff9a44);color:#3b2300;padding:10px 14px;border-radius:14px;font-weight:600;
+      box-shadow:0 6px 20px #0006;animation:pop .35s ease-out}
+  @keyframes pop{from{transform:scale(.8) translateY(14px);opacity:0}to{transform:none;opacity:1}}
   main.full{padding:0;max-width:none}
   .reel{height:calc(100vh - 52px);height:calc(100dvh - 52px);overflow-y:scroll;scroll-snap-type:y mandatory;
         background:linear-gradient(160deg,#6a11cb,#2575fc 60%,#ff6ec4)}
@@ -59,22 +65,14 @@
   <a href="#/record">Record / Upload</a>
   <span style="flex:1"></span>
   <span id="who" class="dim"></span>
+  <span class="dim" style="font-size:11px">build 8</span>
   <a href="#/login" id="out" style="display:none">Sign out</a>
 </nav>
 <main id="app"></main>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
-// Each browser tab keeps its OWN login (sessionStorage), so signing into another account
-// in one tab never changes the account in your other tabs.
-const tabId = sessionStorage.getItem('ztube-tab') || (() => {
-  const t = Math.random().toString(36).slice(2); sessionStorage.setItem('ztube-tab', t); return t;
-})();
-const sb = supabase.createClient(
-  'https://ejwcxwzxlekoutknngtz.supabase.co',
-  'sb_publishable_b_XTX9vAZkQoW8TfafjMgQ_vn-nR0Ye',
-  { auth: { storage: window.sessionStorage, storageKey: 'ztube-auth-' + tabId } }
-);
+let sb; // created in boot(), one separate login per browser tab
 const app = document.getElementById('app');
 const MAX_SECONDS = 300; // keeps recordings under the 50 MB free-tier file limit
 let user = null, cleanup = () => {};
@@ -103,7 +101,6 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 document.getElementById('out').onclick = async () => { await sb.auth.signOut(); };
-sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') location.hash = '#/login'; });
 
 /* ---------- Login ---------- */
 function loginPage() {
@@ -387,22 +384,55 @@ async function addIce(pc, cand) {
 async function flushIce(pc) { while (pc._q && pc._q.length) { try { await pc.addIceCandidate(pc._q.shift()); } catch (e) {} } }
 function chatHtml() {
   return `<h3>Live chat</h3><div id="chatlog" style="height:260px;overflow-y:auto;background:#fff;border-radius:14px;padding:10px;box-shadow:0 6px 20px #7873f524;margin-bottom:10px"></div>
-    <input id="chattxt" placeholder="Say something" style="width:200px"><button id="chatsend">Send</button>`;
+    <input id="chattxt" placeholder="Say something" style="width:180px"><button id="chatsend">Send</button>
+    <button id="chathl" title="Make your message stand out" style="margin-left:6px">⭐</button>
+    <div id="hlpanel" style="display:none;background:#fff;border-radius:14px;padding:12px 14px;margin-top:10px;box-shadow:0 6px 20px #7873f524">
+      <b>Solve these to make your message stand out:</b>
+      <p style="margin:10px 0 4px">10 × 5 = <input id="hl1" inputmode="numeric" style="width:70px;margin:0"></p>
+      <p style="margin:4px 0">3 × 40 = <input id="hl2" inputmode="numeric" style="width:70px;margin:0"></p>
+      <p style="margin:4px 0 10px">12 × 5 = <input id="hl3" inputmode="numeric" style="width:70px;margin:0"></p>
+      <button id="hlgo">⭐ Send highlighted</button> <span id="hlmsg" class="err" style="margin-left:6px"></span>
+    </div>`;
 }
-function addChat(name, text) {
+function addChat(name, text, hl) {
   const log = document.getElementById('chatlog'); if (!log) return;
-  log.insertAdjacentHTML('beforeend', `<p style="margin:4px 0"><b>${esc(name)}</b> ${esc(text)}</p>`);
+  const style = hl
+    ? 'margin:8px 0;padding:8px 12px;border-radius:12px;font-weight:600;background:linear-gradient(90deg,#ffe29a,#ffb3c6);box-shadow:0 0 14px #ffb74d99'
+    : 'margin:4px 0';
+  log.insertAdjacentHTML('beforeend', `<p style="${style}">${hl ? '⭐ ' : ''}<b>${esc(name)}</b> ${esc(text)}</p>`);
   log.scrollTop = log.scrollHeight;
 }
+// a highlighted message also pops up on top of the stream for 8 seconds
+function popup(name, text) {
+  const box = document.getElementById('pop'); if (!box) return;
+  const el = document.createElement('div'); el.className = 'hl';
+  el.innerHTML = `⭐ <b>${esc(name)}</b> ${esc(text)}`;
+  box.appendChild(el); setTimeout(() => el.remove(), 8000);
+}
 function wireChat(ch, name) {
-  const send = () => {
-    const t = document.getElementById('chattxt').value.trim(); if (!t) return;
-    ch.send({ type: 'broadcast', event: 'chat', payload: { name, text: t.slice(0, 300) } });
-    addChat(name, t); document.getElementById('chattxt').value = '';
+  const $ = id => document.getElementById(id);
+  const send = hl => {
+    const t = $('chattxt').value.trim(); if (!t) return false;
+    ch.send({ type: 'broadcast', event: 'chat', payload: { name, text: t.slice(0, 300), hl: !!hl } });
+    addChat(name, t.slice(0, 300), hl); if (hl) popup(name, t.slice(0, 300)); $('chattxt').value = '';
+    return true;
   };
-  document.getElementById('chatsend').onclick = send;
-  document.getElementById('chattxt').onkeydown = e => { if (e.key === 'Enter') send(); };
-  ch.on('broadcast', { event: 'chat' }, ({ payload }) => addChat(payload.name, payload.text));
+  $('chatsend').onclick = () => send(false);
+  $('chattxt').onkeydown = e => { if (e.key === 'Enter') send(false); };
+  $('chathl').onclick = () => {
+    const panel = $('hlpanel');
+    panel.style.display = panel.style.display === 'none' ? '' : 'none';
+    $('hlmsg').textContent = '';
+  };
+  $('hlgo').onclick = () => {
+    if (!$('chattxt').value.trim()) return $('hlmsg').textContent = 'Type your message first.';
+    const ok = $('hl1').value.trim() === '50' && $('hl2').value.trim() === '120' && $('hl3').value.trim() === '60';
+    if (!ok) return $('hlmsg').textContent = 'Not quite, try again.';
+    send(true);
+    ['hl1', 'hl2', 'hl3'].forEach(id => $(id).value = '');
+    $('hlpanel').style.display = 'none'; $('hlmsg').textContent = '';
+  };
+  ch.on('broadcast', { event: 'chat' }, ({ payload }) => { addChat(payload.name, payload.text, payload.hl === true); if (payload.hl === true) popup(payload.name, payload.text); });
 }
 
 /* Lobby: who is live right now (streamers send a heartbeat; a stream counts as live for 45 seconds after the last one) */
@@ -428,7 +458,7 @@ function livePage() {
 async function goLivePage() {
   app.innerHTML = `<h2>Go live</h2>
     <div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
-      <video id="prev" autoplay muted playsinline></video>
+      <div class="vwrap"><video id="prev" autoplay muted playsinline></video><div class="pop" id="pop"></div></div>
       <div id="setup"><input id="ttl" placeholder="Stream title" style="width:260px"><button id="start">Go live</button></div>
       <div id="onair" style="display:none"><b style="color:#e11d48">● You are live</b> · <span id="vc">0</span> watching <button id="end" style="margin-left:10px">End stream</button></div>
       <p id="msg" class="err"></p></div>
@@ -484,7 +514,7 @@ async function goLivePage() {
 async function watchLivePage(hostId) {
   const name = await myName();
   app.innerHTML = `<div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
-      <h2>🔴 Live</h2><video id="lv" controls autoplay playsinline></video>
+      <h2>🔴 Live</h2><div class="vwrap"><video id="lv" controls autoplay playsinline></video><div class="pop" id="pop"></div></div>
       <p id="st" class="dim">Connecting...</p></div>
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
   const setSt = t => { const el = document.getElementById('st'); if (el) el.textContent = t; };
@@ -525,7 +555,36 @@ async function watchLivePage(hostId) {
   onLeave(() => { clearInterval(retry); pc?.close(); sb.removeChannel(ch); });
 }
 
-route();
+/* ---------- Boot: every tab gets its own private login ---------- */
+async function boot() {
+  const claim = id => new Promise(resolve => {
+    if (!navigator.locks) return resolve(true);
+    // a tab "owns" its id for as long as it is open; a duplicated tab finds it taken
+    navigator.locks.request('ztube-tab-' + id, { ifAvailable: true }, lock => {
+      if (!lock) { resolve(false); return; }
+      resolve(true);
+      return new Promise(() => {});
+    });
+  });
+  let id = sessionStorage.getItem('ztube-tab');
+  if (!id || !(await claim(id))) {
+    const old = id;
+    id = Math.random().toString(36).slice(2);
+    await claim(id);
+    if (old) { // duplicated tab: start with the same account, but a separate login from here on
+      const copy = sessionStorage.getItem('ztube-auth-' + old);
+      if (copy) sessionStorage.setItem('ztube-auth-' + id, copy);
+    }
+    sessionStorage.setItem('ztube-tab', id);
+  }
+  sb = supabase.createClient(
+    'https://ejwcxwzxlekoutknngtz.supabase.co',
+    'sb_publishable_b_XTX9vAZkQoW8TfafjMgQ_vn-nR0Ye',
+    { auth: { storage: window.sessionStorage, storageKey: 'ztube-auth-' + id } }
+  );
+  sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT') location.hash = '#/login'; });
+}
+boot().then(route);
 </script>
 </body>
 </html>
