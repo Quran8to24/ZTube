@@ -398,27 +398,24 @@ function wireChat(ch, name) {
   document.getElementById('chattxt').onkeydown = e => { if (e.key === 'Enter') send(); };
   ch.on('broadcast', { event: 'chat' }, ({ payload }) => addChat(payload.name, payload.text));
 }
-function viewerCount(ch) {
-  return Object.values(ch.presenceState()).filter(a => a.some(p => p.role === 'viewer')).length;
-}
 
-/* Lobby: who is live right now */
+/* Lobby: who is live right now (streamers send a heartbeat; a stream counts as live for 45 seconds after the last one) */
 function livePage() {
-  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button><div id="lives" style="margin-top:18px"></div>`;
+  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
   document.getElementById('golive').onclick = () => { location.hash = '#/golive'; };
-  const lobby = sb.channel('ztube-live');
-  const draw = () => {
+  async function draw() {
+    const { data, error } = await sb.from('live_now').select('*');
     const box = document.getElementById('lives'); if (!box) return;
-    const items = Object.entries(lobby.presenceState()).map(([hostId, a]) => ({ hostId, ...a[0] }));
-    box.innerHTML = items.length ? '<div class="grid">' + items.map(i => `
-      <a class="card" href="#/live/${esc(i.hostId)}">
+    if (error) return box.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+    box.innerHTML = data.length ? '<div class="grid">' + data.map(i => `
+      <a class="card" href="#/live/${esc(i.host_id)}">
         <div class="thumb" style="background:linear-gradient(135deg,#ff416c,#ff4b2b)">🔴</div>
         <div class="body"><div style="font-weight:600">${esc(i.title)} <span class="tag">LIVE</span></div><div class="dim">${esc(i.name)}</div></div>
       </a>`).join('') + '</div>' : '<p class="dim">Nobody is live right now.</p>';
-  };
-  lobby.on('presence', { event: 'sync' }, draw).subscribe(() => draw());
+  }
   draw();
-  onLeave(() => sb.removeChannel(lobby));
+  const t = setInterval(draw, 4000);
+  onLeave(() => clearInterval(t));
 }
 
 /* Streamer */
@@ -432,21 +429,23 @@ async function goLivePage() {
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
   const $ = id => document.getElementById(id);
   const name = await myName();
-  let stream, ch, lobby; const pcs = {};
+  let stream, ch, beat; const pcs = {};
+  const count = () => { const el = $('vc'); if (el) el.textContent = Object.values(pcs).filter(pc => pc.connectionState === 'connected').length; };
   onLeave(() => {
+    clearInterval(beat);
     Object.values(pcs).forEach(pc => pc.close());
     stream?.getTracks().forEach(t => t.stop());
     if (ch) sb.removeChannel(ch);
-    if (lobby) sb.removeChannel(lobby);
+    sb.from('live_streams').delete().eq('host_id', user.id).then(() => {});
   });
   $('end').onclick = () => { location.hash = '#/live'; };
   $('start').onclick = async () => {
-    const title = $('ttl').value.trim() || 'Live stream';
+    const title = $('ttl').value.trim().slice(0, 100) || 'Live stream';
     try { stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true }); }
     catch (e) { return $('msg').textContent = 'Could not access camera/mic: ' + e.message; }
     $('prev').srcObject = stream;
     $('setup').style.display = 'none'; $('onair').style.display = '';
-    ch = sb.channel('live-' + user.id, { config: { broadcast: { self: false }, presence: { key: user.id } } });
+    ch = sb.channel('live-' + user.id, { config: { broadcast: { self: false } } });
     wireChat(ch, name);
     ch.on('broadcast', { event: 'join' }, async ({ payload }) => {
         const viewer = payload.from;
@@ -454,6 +453,7 @@ async function goLivePage() {
         const pc = new RTCPeerConnection(ICE); pcs[viewer] = pc;
         stream.getTracks().forEach(t => pc.addTrack(t, stream));
         pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: viewer, from: user.id, candidate: e.candidate } });
+        pc.onconnectionstatechange = count;
         await pc.setLocalDescription(await pc.createOffer());
         ch.send({ type: 'broadcast', event: 'offer', payload: { to: viewer, sdp: pc.localDescription } });
       })
@@ -465,10 +465,12 @@ async function goLivePage() {
       .on('broadcast', { event: 'ice' }, ({ payload }) => {
         if (payload.to === user.id && pcs[payload.from]) addIce(pcs[payload.from], payload.candidate);
       })
-      .on('presence', { event: 'sync' }, () => { $('vc').textContent = viewerCount(ch); })
-      .subscribe(async st => { if (st === 'SUBSCRIBED') await ch.track({ role: 'host' }); });
-    lobby = sb.channel('ztube-live', { config: { presence: { key: user.id } } });
-    lobby.subscribe(async st => { if (st === 'SUBSCRIBED') await lobby.track({ title, name }); });
+      .subscribe();
+    const announce = async () => {
+      const { error } = await sb.from('live_streams').upsert({ host_id: user.id, title, name });
+      if (error) $('msg').textContent = 'Could not list your stream: ' + error.message;
+    };
+    announce(); beat = setInterval(announce, 15000);
   };
 }
 
@@ -479,21 +481,23 @@ async function watchLivePage(hostId) {
       <h2>🔴 Live</h2><video id="lv" controls autoplay playsinline></video>
       <p id="st" class="dim">Connecting...</p></div>
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
-  const $ = id => document.getElementById(id);
+  const setSt = t => { const el = document.getElementById('st'); if (el) el.textContent = t; };
   let pc, connected = false, tries = 0, retry;
-  const ch = sb.channel('live-' + hostId, { config: { broadcast: { self: false }, presence: { key: user.id } } });
-  const hostHere = () => (ch.presenceState()[hostId] || []).some(p => p.role === 'host');
+  const ch = sb.channel('live-' + hostId, { config: { broadcast: { self: false } } });
   wireChat(ch, name);
   ch.on('broadcast', { event: 'offer' }, async ({ payload }) => {
       if (payload.to !== user.id) return;
       pc?.close();
-      pc = new RTCPeerConnection(ICE);
-      pc.ontrack = e => { $('lv').srcObject = e.streams[0]; };
+      const mine = pc = new RTCPeerConnection(ICE);
+      pc.ontrack = e => { const v = document.getElementById('lv'); if (v) v.srcObject = e.streams[0]; };
       pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: hostId, from: user.id, candidate: e.candidate } });
       pc.onconnectionstatechange = () => {
-        connected = pc.connectionState === 'connected';
-        if (connected) $('st').textContent = 'Live';
-        if (pc.connectionState === 'failed') $('st').textContent = "Couldn't connect. Some school or work networks block live video.";
+        if (mine !== pc) return;
+        const st = mine.connectionState;
+        connected = st === 'connected';
+        if (st === 'connected') setSt('Live');
+        else if (st === 'failed') setSt("Couldn't connect. Some school or work networks block live video.");
+        else if (st === 'disconnected' || st === 'closed') setSt('The stream ended.');
       };
       await pc.setRemoteDescription(payload.sdp); await flushIce(pc);
       await pc.setLocalDescription(await pc.createAnswer());
@@ -502,17 +506,15 @@ async function watchLivePage(hostId) {
     .on('broadcast', { event: 'ice' }, ({ payload }) => {
       if (payload.to === user.id && payload.from === hostId && pc) addIce(pc, payload.candidate);
     })
-    .on('presence', { event: 'sync' }, () => {
-      if (!$('st')) return;
-      if (!hostHere()) { if (!connected) $('st').textContent = 'This stream is not live.'; else { $('st').textContent = 'The stream ended.'; connected = false; } }
-      else if (!connected && $('st').textContent !== 'Live') $('st').textContent = 'Connecting...';
-    })
-    .subscribe(async st => {
+    .subscribe(st => {
       if (st !== 'SUBSCRIBED') return;
-      await ch.track({ role: 'viewer', name });
       const join = () => ch.send({ type: 'broadcast', event: 'join', payload: { from: user.id } });
       join();
-      retry = setInterval(() => { if (connected || ++tries > 10) return clearInterval(retry); if (hostHere()) join(); }, 4000);
+      retry = setInterval(() => {
+        if (connected) return clearInterval(retry);
+        if (++tries > 8) { clearInterval(retry); if (!pc) setSt('This stream is not live.'); return; }
+        if (!pc) join();
+      }, 4000);
     });
   onLeave(() => { clearInterval(retry); pc?.close(); sb.removeChannel(ch); });
 }
