@@ -65,9 +65,15 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
+// Each browser tab keeps its OWN login (sessionStorage), so signing into another account
+// in one tab never changes the account in your other tabs.
+const tabId = sessionStorage.getItem('ztube-tab') || (() => {
+  const t = Math.random().toString(36).slice(2); sessionStorage.setItem('ztube-tab', t); return t;
+})();
 const sb = supabase.createClient(
   'https://ejwcxwzxlekoutknngtz.supabase.co',
-  'sb_publishable_b_XTX9vAZkQoW8TfafjMgQ_vn-nR0Ye'
+  'sb_publishable_b_XTX9vAZkQoW8TfafjMgQ_vn-nR0Ye',
+  { auth: { storage: window.sessionStorage, storageKey: 'ztube-auth-' + tabId } }
 );
 const app = document.getElementById('app');
 const MAX_SECONDS = 300; // keeps recordings under the 50 MB free-tier file limit
