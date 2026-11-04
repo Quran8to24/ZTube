@@ -55,6 +55,7 @@
 <nav>
   <a href="#/" class="brand">▶ ZTube</a>
   <a href="#/shorts">Shorts</a>
+  <a href="#/live">🔴 Live</a>
   <a href="#/record">Record / Upload</a>
   <span style="flex:1"></span>
   <span id="who" class="dim"></span>
@@ -89,6 +90,9 @@ async function route() {
   if (parts[0] === 'shorts') return shortsPage();
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
+  if (parts[0] === 'live') return parts[1] ? watchLivePage(parts[1]) : livePage();
+  if (parts[0] === 'golive') return goLivePage();
+  if (parts[0] === 'channel') return channelPage(parts[1]);
   return homePage();
 }
 window.addEventListener('hashchange', route);
@@ -114,21 +118,82 @@ function loginPage() {
   document.getElementById('up').onclick = () => go('up');
 }
 
+
+/* ---------- Shared helpers ---------- */
+function onLeave(fn) { const prev = cleanup; cleanup = () => { prev(); fn(); }; }
+const hue = id => parseInt(id.slice(0, 4), 16) % 360;
+function cardsHtml(list) {
+  if (!list.length) return '<p>No videos yet.</p>';
+  return '<div class="grid">' + list.map(v => `
+    <a class="card" href="#/watch/${esc(v.id)}">
+      <div class="thumb" style="background:linear-gradient(135deg,hsl(${hue(v.id)},85%,68%),hsl(${(hue(v.id) + 60) % 360},85%,62%))">▶<span class="dur">${mm(v.duration_seconds)}</span></div>
+      <div class="body">
+        <div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
+        <div class="dim" style="margin-top:4px">${esc(v.display_name || v.username)} · <span data-views="${esc(v.id)}">${v.view_count}</span> views</div>
+      </div>
+    </a>`).join('') + '</div>';
+}
+// view counts on any cards on screen update the moment someone watches
+function liveViews() {
+  const ch = sb.channel('views-' + Math.random().toString(36).slice(2))
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'videos' }, p => {
+      document.querySelectorAll(`[data-views="${p.new.id}"]`).forEach(e => e.textContent = p.new.view_count);
+    }).subscribe();
+  onLeave(() => sb.removeChannel(ch));
+}
+// channel name + live subscriber count + subscribe button
+function channelBar(el, channelId, name) {
+  const mine = channelId === user.id;
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:6px 0 14px">
+    <a href="#/channel/${esc(channelId)}" style="font-weight:600;font-size:17px;color:inherit;text-decoration:none">${esc(name)}</a>
+    <span class="dim"><span id="subn">0</span> subscribers</span>
+    ${mine ? '' : '<button id="subbtn">Subscribe</button>'}</div>`;
+  const nEl = el.querySelector('#subn'), btn = el.querySelector('#subbtn');
+  let subbed = false;
+  async function refresh() {
+    const { count } = await sb.from('subscriptions').select('*', { count: 'exact', head: true }).eq('channel_id', channelId);
+    nEl.textContent = count ?? 0;
+    if (btn) {
+      const { data } = await sb.from('subscriptions').select('channel_id')
+        .eq('subscriber_id', user.id).eq('channel_id', channelId).maybeSingle();
+      subbed = !!data;
+      btn.textContent = subbed ? 'Subscribed ✓' : 'Subscribe';
+      btn.style.background = subbed ? '#b8b5d6' : '';
+    }
+  }
+  if (btn) btn.onclick = async () => {
+    btn.disabled = true;
+    if (subbed) await sb.from('subscriptions').delete().eq('subscriber_id', user.id).eq('channel_id', channelId);
+    else await sb.from('subscriptions').insert({ subscriber_id: user.id, channel_id: channelId });
+    await refresh(); btn.disabled = false;
+  };
+  refresh();
+  const ch = sb.channel('subs-' + Math.random().toString(36).slice(2))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'subscriptions', filter: `channel_id=eq.${channelId}` }, refresh)
+    .subscribe();
+  onLeave(() => sb.removeChannel(ch));
+}
+
+/* ---------- Channel page ---------- */
+async function channelPage(id) {
+  app.innerHTML = '<p class="dim">Loading...</p>';
+  const { data: ch, error } = await sb.from('channels').select('*').eq('id', id).single();
+  if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  const { data: vids } = await sb.from('video_feed').select('*').eq('channel_id', id).order('created_at', { ascending: false });
+  app.innerHTML = '<div id="chan"></div><h3>Videos</h3><div id="vids"></div>';
+  channelBar(document.getElementById('chan'), id, ch.display_name || ch.username);
+  document.getElementById('vids').innerHTML = cardsHtml(vids || []);
+  liveViews();
+}
+
 /* ---------- Home feed ---------- */
 async function homePage() {
   app.innerHTML = '<p class="dim">Loading...</p>';
   const { data, error } = await sb.from('video_feed').select('*').order('created_at', { ascending: false });
   if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
   if (!data.length) return app.innerHTML = '<p>No videos yet. Go to Record / Upload to make the first one.</p>';
-  const hue = id => parseInt(id.slice(0, 4), 16) % 360;
-  app.innerHTML = '<div class="grid">' + data.map(v => `
-    <a class="card" href="#/watch/${esc(v.id)}">
-      <div class="thumb" style="background:linear-gradient(135deg,hsl(${hue(v.id)},85%,68%),hsl(${(hue(v.id) + 60) % 360},85%,62%))">▶<span class="dur">${mm(v.duration_seconds)}</span></div>
-      <div class="body">
-        <div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
-        <div class="dim" style="margin-top:4px">${esc(v.display_name || v.username)} · ${v.view_count} views</div>
-      </div>
-    </a>`).join('') + '</div>';
+  app.innerHTML = cardsHtml(data);
+  liveViews();
 }
 
 /* ---------- Record / upload ---------- */
@@ -218,11 +283,13 @@ async function watchPage(id) {
   const { data: s, error: se } = await sb.storage.from('videos').createSignedUrl(v.video_path, 3600);
   app.innerHTML = `${se ? `<p class="err">Could not get the video file: ${esc(se.message)}</p>` : `<video id="player" controls autoplay playsinline style="max-width:100%;max-height:70vh"></video>`}
     <h2>${esc(v.title)}</h2>
-    <p class="dim">${esc(v.display_name || v.username)} · ${v.view_count} views · ${v.is_short ? 'Short' : 'Video'}</p>
+    <p class="dim"><span id="views">${v.view_count}</span> views · ${v.is_short ? 'Short' : 'Video'}</p>
+    <div id="chan"></div>
     <h3 id="count"></h3>
     <input id="txt" placeholder="Add a comment" style="width:320px"><button id="post">Post</button>
     <p id="msg" class="err"></p><div id="list"></div>`;
   if (!se) document.getElementById('player').src = s.signedUrl;
+  channelBar(document.getElementById('chan'), v.channel_id, v.display_name || v.username);
   sb.rpc('increment_view', { p_video_id: id });
   sb.from('watch_history').upsert({ user_id: user.id, video_id: id, watched_at: new Date().toISOString() });
 
@@ -236,8 +303,10 @@ async function watchPage(id) {
   load();
   const ch = sb.channel('comments-' + id)
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'comments', filter: `video_id=eq.${id}` }, load)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'videos', filter: `id=eq.${id}` },
+        p => { document.getElementById('views').textContent = p.new.view_count; })
     .subscribe();
-  cleanup = () => sb.removeChannel(ch);
+  onLeave(() => sb.removeChannel(ch));
   document.getElementById('post').onclick = async () => {
     const body = document.getElementById('txt').value.trim(); if (!body) return;
     const { error } = await sb.from('comments').insert({ video_id: id, user_id: user.id, body });
@@ -294,6 +363,158 @@ async function shortsPage() {
     };
   });
   cleanup = () => io.disconnect();
+}
+
+/* ---------- Livestream (free, peer-to-peer: video goes straight from streamer to viewers) ---------- */
+const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
+let myNameCache = null;
+async function myName() {
+  if (!myNameCache) {
+    const { data } = await sb.from('profiles').select('username, display_name').eq('id', user.id).single();
+    myNameCache = data?.display_name || data?.username || 'Guest';
+  }
+  return myNameCache;
+}
+async function addIce(pc, cand) {
+  if (pc.remoteDescription) { try { await pc.addIceCandidate(cand); } catch (e) {} } else (pc._q = pc._q || []).push(cand);
+}
+async function flushIce(pc) { while (pc._q && pc._q.length) { try { await pc.addIceCandidate(pc._q.shift()); } catch (e) {} } }
+function chatHtml() {
+  return `<h3>Live chat</h3><div id="chatlog" style="height:260px;overflow-y:auto;background:#fff;border-radius:14px;padding:10px;box-shadow:0 6px 20px #7873f524;margin-bottom:10px"></div>
+    <input id="chattxt" placeholder="Say something" style="width:200px"><button id="chatsend">Send</button>`;
+}
+function addChat(name, text) {
+  const log = document.getElementById('chatlog'); if (!log) return;
+  log.insertAdjacentHTML('beforeend', `<p style="margin:4px 0"><b>${esc(name)}</b> ${esc(text)}</p>`);
+  log.scrollTop = log.scrollHeight;
+}
+function wireChat(ch, name) {
+  const send = () => {
+    const t = document.getElementById('chattxt').value.trim(); if (!t) return;
+    ch.send({ type: 'broadcast', event: 'chat', payload: { name, text: t.slice(0, 300) } });
+    addChat(name, t); document.getElementById('chattxt').value = '';
+  };
+  document.getElementById('chatsend').onclick = send;
+  document.getElementById('chattxt').onkeydown = e => { if (e.key === 'Enter') send(); };
+  ch.on('broadcast', { event: 'chat' }, ({ payload }) => addChat(payload.name, payload.text));
+}
+function viewerCount(ch) {
+  return Object.values(ch.presenceState()).filter(a => a.some(p => p.role === 'viewer')).length;
+}
+
+/* Lobby: who is live right now */
+function livePage() {
+  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button><div id="lives" style="margin-top:18px"></div>`;
+  document.getElementById('golive').onclick = () => { location.hash = '#/golive'; };
+  const lobby = sb.channel('ztube-live');
+  const draw = () => {
+    const box = document.getElementById('lives'); if (!box) return;
+    const items = Object.entries(lobby.presenceState()).map(([hostId, a]) => ({ hostId, ...a[0] }));
+    box.innerHTML = items.length ? '<div class="grid">' + items.map(i => `
+      <a class="card" href="#/live/${esc(i.hostId)}">
+        <div class="thumb" style="background:linear-gradient(135deg,#ff416c,#ff4b2b)">🔴</div>
+        <div class="body"><div style="font-weight:600">${esc(i.title)} <span class="tag">LIVE</span></div><div class="dim">${esc(i.name)}</div></div>
+      </a>`).join('') + '</div>' : '<p class="dim">Nobody is live right now.</p>';
+  };
+  lobby.on('presence', { event: 'sync' }, draw).subscribe(() => draw());
+  draw();
+  onLeave(() => sb.removeChannel(lobby));
+}
+
+/* Streamer */
+async function goLivePage() {
+  app.innerHTML = `<h2>Go live</h2>
+    <div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
+      <video id="prev" autoplay muted playsinline></video>
+      <div id="setup"><input id="ttl" placeholder="Stream title" style="width:260px"><button id="start">Go live</button></div>
+      <div id="onair" style="display:none"><b style="color:#e11d48">● You are live</b> · <span id="vc">0</span> watching <button id="end" style="margin-left:10px">End stream</button></div>
+      <p id="msg" class="err"></p></div>
+      <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
+  const $ = id => document.getElementById(id);
+  const name = await myName();
+  let stream, ch, lobby; const pcs = {};
+  onLeave(() => {
+    Object.values(pcs).forEach(pc => pc.close());
+    stream?.getTracks().forEach(t => t.stop());
+    if (ch) sb.removeChannel(ch);
+    if (lobby) sb.removeChannel(lobby);
+  });
+  $('end').onclick = () => { location.hash = '#/live'; };
+  $('start').onclick = async () => {
+    const title = $('ttl').value.trim() || 'Live stream';
+    try { stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true }); }
+    catch (e) { return $('msg').textContent = 'Could not access camera/mic: ' + e.message; }
+    $('prev').srcObject = stream;
+    $('setup').style.display = 'none'; $('onair').style.display = '';
+    ch = sb.channel('live-' + user.id, { config: { broadcast: { self: false }, presence: { key: user.id } } });
+    wireChat(ch, name);
+    ch.on('broadcast', { event: 'join' }, async ({ payload }) => {
+        const viewer = payload.from;
+        pcs[viewer]?.close();
+        const pc = new RTCPeerConnection(ICE); pcs[viewer] = pc;
+        stream.getTracks().forEach(t => pc.addTrack(t, stream));
+        pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: viewer, from: user.id, candidate: e.candidate } });
+        await pc.setLocalDescription(await pc.createOffer());
+        ch.send({ type: 'broadcast', event: 'offer', payload: { to: viewer, sdp: pc.localDescription } });
+      })
+      .on('broadcast', { event: 'answer' }, async ({ payload }) => {
+        const pc = pcs[payload.from];
+        if (payload.to !== user.id || !pc || pc.signalingState !== 'have-local-offer') return;
+        await pc.setRemoteDescription(payload.sdp); await flushIce(pc);
+      })
+      .on('broadcast', { event: 'ice' }, ({ payload }) => {
+        if (payload.to === user.id && pcs[payload.from]) addIce(pcs[payload.from], payload.candidate);
+      })
+      .on('presence', { event: 'sync' }, () => { $('vc').textContent = viewerCount(ch); })
+      .subscribe(async st => { if (st === 'SUBSCRIBED') await ch.track({ role: 'host' }); });
+    lobby = sb.channel('ztube-live', { config: { presence: { key: user.id } } });
+    lobby.subscribe(async st => { if (st === 'SUBSCRIBED') await lobby.track({ title, name }); });
+  };
+}
+
+/* Viewer */
+async function watchLivePage(hostId) {
+  const name = await myName();
+  app.innerHTML = `<div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
+      <h2>🔴 Live</h2><video id="lv" controls autoplay playsinline></video>
+      <p id="st" class="dim">Connecting...</p></div>
+      <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
+  const $ = id => document.getElementById(id);
+  let pc, connected = false, tries = 0, retry;
+  const ch = sb.channel('live-' + hostId, { config: { broadcast: { self: false }, presence: { key: user.id } } });
+  const hostHere = () => (ch.presenceState()[hostId] || []).some(p => p.role === 'host');
+  wireChat(ch, name);
+  ch.on('broadcast', { event: 'offer' }, async ({ payload }) => {
+      if (payload.to !== user.id) return;
+      pc?.close();
+      pc = new RTCPeerConnection(ICE);
+      pc.ontrack = e => { $('lv').srcObject = e.streams[0]; };
+      pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: hostId, from: user.id, candidate: e.candidate } });
+      pc.onconnectionstatechange = () => {
+        connected = pc.connectionState === 'connected';
+        if (connected) $('st').textContent = 'Live';
+        if (pc.connectionState === 'failed') $('st').textContent = "Couldn't connect. Some school or work networks block live video.";
+      };
+      await pc.setRemoteDescription(payload.sdp); await flushIce(pc);
+      await pc.setLocalDescription(await pc.createAnswer());
+      ch.send({ type: 'broadcast', event: 'answer', payload: { to: hostId, from: user.id, sdp: pc.localDescription } });
+    })
+    .on('broadcast', { event: 'ice' }, ({ payload }) => {
+      if (payload.to === user.id && payload.from === hostId && pc) addIce(pc, payload.candidate);
+    })
+    .on('presence', { event: 'sync' }, () => {
+      if (!$('st')) return;
+      if (!hostHere()) { if (!connected) $('st').textContent = 'This stream is not live.'; else { $('st').textContent = 'The stream ended.'; connected = false; } }
+      else if (!connected && $('st').textContent !== 'Live') $('st').textContent = 'Connecting...';
+    })
+    .subscribe(async st => {
+      if (st !== 'SUBSCRIBED') return;
+      await ch.track({ role: 'viewer', name });
+      const join = () => ch.send({ type: 'broadcast', event: 'join', payload: { from: user.id } });
+      join();
+      retry = setInterval(() => { if (connected || ++tries > 10) return clearInterval(retry); if (hostHere()) join(); }, 4000);
+    });
+  onLeave(() => { clearInterval(retry); pc?.close(); sb.removeChannel(ch); });
 }
 
 route();
