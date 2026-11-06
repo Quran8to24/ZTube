@@ -69,7 +69,7 @@
   <a href="#/" class="brand">▶ ZTube</a>
   <input id="q" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
   <a href="#/shorts">Shorts</a>
-  <a href="#/live">🔴 Live</a>
+  <a href="#/live" id="livelink">🔴 Live</a>
   <a href="#/record">Record / Upload</a>
   <span style="flex:1"></span>
   <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
@@ -137,6 +137,13 @@ function loginPage() {
 /* ---------- Shared helpers ---------- */
 function onLeave(fn) { const prev = cleanup; cleanup = () => { prev(); fn(); }; }
 const hue = id => parseInt(id.slice(0, 4), 16) % 360;
+function liveCardsHtml(items) {
+  return '<div class="grid">' + items.map(i => `
+    <a class="card" href="#/live/${esc(i.host_id)}">
+      <div class="thumb" style="background:linear-gradient(135deg,#ff416c,#ff4b2b)">🔴</div>
+      <div class="body"><div style="font-weight:600">${esc(i.title)} <span class="tag">LIVE</span></div><div class="dim">${esc(i.name)}</div></div>
+    </a>`).join('') + '</div>';
+}
 const nameHue = str => [...String(str || '?')].reduce((n, c) => n + c.charCodeAt(0), 0) % 360;
 // round profile picture (or a colored circle with the first letter if there is no picture)
 function avHtml(path, name, size) {
@@ -192,8 +199,8 @@ function cardsHtml(list) {
       <div class="thumb" style="background:linear-gradient(135deg,hsl(${hue(v.id)},85%,68%),hsl(${(hue(v.id) + 60) % 360},85%,62%))">▶<span class="dur">${mm(v.duration_seconds)}</span></div>
       <div class="body" style="display:flex;gap:10px">
         ${avHtml(v.avatar_path, nm, 36)}
-        <div><div style="font-weight:600">${esc(v.title)} ${v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
-        <div class="dim" style="margin-top:2px">${esc(nm)} · <span data-views="${esc(v.id)}">${v.view_count}</span> views</div></div>
+        <div><div style="font-weight:600">${esc(v.title)} ${v.was_live ? '<span class="tag" style="background:#e11d48">PAST LIVE</span>' : v.is_short ? '<span class="tag">SHORT</span>' : ''}</div>
+        <div class="dim" style="margin-top:2px" data-ch="${esc(v.channel_id)}">${esc(nm)} <span class="lb tag" style="display:none;background:#e11d48">🔴 LIVE</span> · <span data-views="${esc(v.id)}">${v.view_count}</span> views</div></div>
       </div>
     </a>
     ${v.channel_id === user.id ? `<button class="delbtn" data-del="${esc(v.id)}" title="Delete video">🗑</button>` : ''}
@@ -254,11 +261,20 @@ async function channelPage(id) {
         <div class="dim">@${esc(ch.username)} · ${list.length} videos</div>
         ${ch.bio ? `<p style="margin:8px 0;max-width:520px">${esc(ch.bio)}</p>` : ''}
         <div id="chan"></div></div></div>
-    <div style="margin:10px 0"><button class="chip on" data-f="all">All</button> <button class="chip" data-f="video">Videos</button> <button class="chip" data-f="short">Shorts</button></div>
+    <div id="chanlive"></div>
+    <div style="margin:10px 0"><button class="chip on" data-f="all">All</button> <button class="chip" data-f="video">Videos</button> <button class="chip" data-f="short">Shorts</button> <button class="chip" data-f="live">Live</button></div>
     <div id="vids"></div>`;
   channelBar(document.getElementById('chan'), id, nm, ch.avatar_path, true);
+  const drawLive = async () => {
+    const el = document.getElementById('chanlive'); if (!el) return;
+    const { data } = await sb.from('live_now').select('*').eq('host_id', id);
+    el.innerHTML = data?.length ? `<a href="#/live/${esc(id)}" style="display:block;background:linear-gradient(90deg,#ff416c,#ff4b2b);color:#fff;padding:12px 16px;border-radius:14px;font-weight:600;text-decoration:none;margin:10px 0">🔴 LIVE NOW: ${esc(data[0].title)} · tap to watch</a>` : '';
+  };
+  drawLive();
+  const liveTimer = setInterval(drawLive, 5000);
+  onLeave(() => clearInterval(liveTimer));
   const box = document.getElementById('vids');
-  const show = f => { box.innerHTML = cardsHtml(list.filter(v => f === 'all' || (f === 'short') === v.is_short)); };
+  const show = f => { box.innerHTML = cardsHtml(list.filter(v => f === 'all' || (f === 'live' ? v.was_live : f === 'short' ? (v.is_short && !v.was_live) : (!v.is_short && !v.was_live)))); };
   show('all'); wireDeletes(box, list);
   app.querySelectorAll('[data-f]').forEach(b => b.onclick = () => {
     app.querySelectorAll('[data-f]').forEach(x => x.classList.toggle('on', x === b));
@@ -337,13 +353,27 @@ async function settingsPage() {
 
 /* ---------- Home feed ---------- */
 async function homePage() {
-  app.innerHTML = '<p class="dim">Loading...</p>';
+  app.innerHTML = '<div id="livenow"></div><div id="vids"><p class="dim">Loading...</p></div>';
+  let liveIds = new Set();
+  const applyBadges = () => document.querySelectorAll('[data-ch]').forEach(el => {
+    const b = el.querySelector('.lb'); if (b) b.style.display = liveIds.has(el.dataset.ch) ? '' : 'none';
+  });
+  const drawLive = async () => {
+    const box = document.getElementById('livenow'); if (!box) return;
+    const { data } = await sb.from('live_now').select('*');
+    liveIds = new Set((data || []).map(i => i.host_id));
+    box.innerHTML = data?.length ? `<h3>🔴 Live now</h3>${liveCardsHtml(data)}<h3>Videos</h3>` : '';
+    applyBadges();
+  };
+  drawLive();
+  const t = setInterval(drawLive, 5000);
+  onLeave(() => clearInterval(t));
   const { data, error } = await sb.from('video_feed').select('*').order('created_at', { ascending: false });
-  if (error) return app.innerHTML = `<p class="err">${esc(error.message)}</p>`;
-  if (!data.length) return app.innerHTML = '<p>No videos yet. Go to Record / Upload to make the first one.</p>';
-  app.innerHTML = '<div id="vids"></div>';
-  const box = document.getElementById('vids');
+  const box = document.getElementById('vids'); if (!box) return;
+  if (error) return box.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+  if (!data.length) return box.innerHTML = '<p>No videos yet. Go to Record / Upload to make the first one.</p>';
   box.innerHTML = cardsHtml(data); wireDeletes(box, data);
+  applyBadges();
   liveViews();
 }
 
@@ -434,7 +464,7 @@ async function watchPage(id) {
   const { data: s, error: se } = await sb.storage.from('videos').createSignedUrl(v.video_path, 3600);
   app.innerHTML = `${se ? `<p class="err">Could not get the video file: ${esc(se.message)}</p>` : `<video id="player" controls autoplay playsinline style="max-width:100%;max-height:70vh"></video>`}
     <h2>${esc(v.title)}</h2>
-    <p class="dim"><span id="views">${v.view_count}</span> views · ${v.is_short ? 'Short' : 'Video'}</p>
+    <p class="dim"><span id="views">${v.view_count}</span> views · ${v.was_live ? 'Past live stream' : v.is_short ? 'Short' : 'Video'}</p>
     ${v.channel_id === user.id ? '<button id="del" style="background:#e11d48;margin-bottom:8px">🗑 Delete video</button>' : ''}
     <div id="chan"></div>
     <h3 id="count"></h3>
@@ -472,7 +502,7 @@ async function watchPage(id) {
 let soundOn = true;
 async function shortsPage() {
   app.innerHTML = '<p class="dim" style="padding:20px">Loading shorts...</p>';
-  const { data, error } = await sb.from('video_feed').select('*').eq('is_short', true).limit(60);
+  const { data, error } = await sb.from('video_feed').select('*').eq('is_short', true).eq('was_live', false).limit(60);
   if (error) return app.innerHTML = `<p class="err" style="padding:20px">${esc(error.message)}</p>`;
   if (!data.length) return app.innerHTML = '<p style="padding:20px">No shorts yet. Record something under 1:40 and it shows up here.</p>';
   // shuffle (Fisher-Yates) so the order is different every visit
@@ -625,27 +655,78 @@ async function goLivePage() {
     <div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
       <div class="vwrap"><video id="prev" autoplay muted playsinline></video><div class="pop" id="pop"></div></div>
       <div id="setup"><input id="ttl" placeholder="Stream title" style="width:260px"><button id="start">Go live</button></div>
-      <div id="onair" style="display:none"><b style="color:#e11d48">● You are live</b> · <span id="vc">0</span> watching <button id="end" style="margin-left:10px">End stream</button></div>
+      <div id="onair" style="display:none"><b style="color:#e11d48">● You are live</b> · <span id="vc">0</span> watching <button id="end" style="margin-left:10px">End stream</button><br><span class="dim">Press End stream (not the back button) so you can save a copy.</span></div>
+      <div id="savebox" style="display:none"><h3>Stream ended</h3><video id="rv" controls playsinline></video><p id="si" class="dim"></p>
+        <p><b>Save this stream to your channel?</b></p>
+        <input id="stt" placeholder="Title" style="width:260px"><br>
+        <button id="savebtn">Save to my channel</button> <button id="dropbtn" style="background:#6b6890">Don't save</button></div>
       <p id="msg" class="err"></p></div>
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
   const $ = id => document.getElementById(id);
   const name = await myName();
-  let stream, ch, beat; const pcs = {};
+  let stream, ch, beat, rec, blob, streamTitle = ''; const pcs = {};
+  let chunks = [], recSize = 0, t0 = 0, capAt = 0, ending = false;
   const count = () => { const el = $('vc'); if (el) el.textContent = Object.values(pcs).filter(pc => pc.connectionState === 'connected').length; };
-  onLeave(() => {
+  const stopBroadcast = () => {
     clearInterval(beat);
     Object.values(pcs).forEach(pc => pc.close());
     stream?.getTracks().forEach(t => t.stop());
-    if (ch) sb.removeChannel(ch);
+    if (ch) { sb.removeChannel(ch); ch = null; }
     sb.from('live_streams').delete().eq('host_id', user.id).then(() => {});
-  });
-  $('end').onclick = () => { location.hash = '#/live'; };
+  };
+  onLeave(() => { try { if (rec && rec.state !== 'inactive') rec.stop(); } catch (e) {} stopBroadcast(); });
+
+  // after the stream ends, offer to keep the recording on your channel
+  const showSave = () => {
+    const secs = t0 ? ((capAt || Date.now()) - t0) / 1000 : 0;
+    blob = chunks.length ? new Blob(chunks, { type: rec.mimeType }) : null;
+    if (!blob || blob.size < 20000 || secs < 2) { location.hash = '#/live'; return; }
+    document.querySelector('.vwrap').style.display = 'none';
+    $('onair').style.display = 'none'; $('savebox').style.display = '';
+    $('rv').src = URL.createObjectURL(blob);
+    $('stt').value = streamTitle;
+    $('si').textContent = `${mm(secs)} · ${(blob.size / 1048576).toFixed(1)} MB` +
+      (capAt ? ' · This copy only covers the first part of the stream because of the free 50 MB file limit.' : '');
+    $('dropbtn').onclick = () => { location.hash = '#/live'; };
+    $('savebtn').onclick = async () => {
+      const title = $('stt').value.trim().slice(0, 150);
+      if (!title) { $('msg').className = 'err'; return $('msg').textContent = 'Add a title first.'; }
+      $('savebtn').disabled = true; $('dropbtn').disabled = true;
+      $('msg').className = 'dim'; $('msg').textContent = 'Saving...';
+      const t = blob.type, ext = t.includes('mp4') ? 'mp4' : 'webm';
+      const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
+      const up = await sb.storage.from('videos').upload(path, blob, { contentType: t.split(';')[0] });
+      if (up.error) { $('savebtn').disabled = false; $('dropbtn').disabled = false; $('msg').className = 'err'; return $('msg').textContent = up.error.message; }
+      const { data, error } = await sb.from('videos')
+        .insert({ channel_id: user.id, title, video_path: path, duration_seconds: Math.max(secs, 0.1), was_live: true })
+        .select('id').single();
+      if (error) { $('savebtn').disabled = false; $('dropbtn').disabled = false; $('msg').className = 'err'; return $('msg').textContent = error.message; }
+      location.hash = '#/watch/' + data.id;
+    };
+  };
+  const finish = () => { stopBroadcast(); showSave(); };
+  $('end').onclick = () => {
+    ending = true;
+    if (rec && rec.state !== 'inactive') rec.stop(); else finish();
+  };
   $('start').onclick = async () => {
     const title = $('ttl').value.trim().slice(0, 100) || 'Live stream';
     try { stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true }); }
     catch (e) { return $('msg').textContent = 'Could not access camera/mic: ' + e.message; }
     $('prev').srcObject = stream;
     $('setup').style.display = 'none'; $('onair').style.display = '';
+    streamTitle = title;
+    try { // record a copy on this device while streaming
+      const mime = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'].find(t => MediaRecorder.isTypeSupported(t));
+      rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 600000, audioBitsPerSecond: 64000 });
+      rec.ondataavailable = e => {
+        if (!e.data.size) return;
+        chunks.push(e.data); recSize += e.data.size;
+        if (recSize > 47 * 1024 * 1024 && rec.state !== 'inactive') { capAt = Date.now(); rec.stop(); }
+      };
+      rec.onstop = () => { if (ending) finish(); };
+      t0 = Date.now(); rec.start(1000);
+    } catch (e) { rec = null; }
     ch = sb.channel('live-' + user.id, { config: { broadcast: { self: false } } });
     wireChat(ch, name);
     ch.on('broadcast', { event: 'join' }, async ({ payload }) => {
@@ -754,7 +835,14 @@ async function boot() {
     if (e.key === 'Enter' && v) location.hash = '#/search/' + encodeURIComponent(v);
   });
 }
-boot().then(route);
+async function updateLiveDot() {
+  const el = document.getElementById('livelink');
+  if (!el || !user || document.hidden) return;
+  const { count } = await sb.from('live_now').select('*', { count: 'exact', head: true });
+  el.textContent = count ? `🔴 Live (${count})` : '🔴 Live';
+}
+setInterval(updateLiveDot, 8000);
+boot().then(() => { route(); setTimeout(updateLiveDot, 1500); });
 </script>
 </body>
 </html>
