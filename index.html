@@ -70,6 +70,7 @@
   <input id="q" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
   <a href="#/shorts">Shorts</a>
   <a href="#/live" id="livelink">🔴 Live</a>
+  <a href="#/facechat">📹 FaceChat</a>
   <a href="#/record">Record / Upload</a>
   <span style="flex:1"></span>
   <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
@@ -94,7 +95,7 @@ async function route() {
   const { data } = await sb.auth.getSession();
   user = data.session?.user || null;
   document.getElementById('me').style.display = user ? 'flex' : 'none';
-  if (user) loadMe(); else document.getElementById('who').textContent = '';
+  if (user) { loadMe(); ensureInbox(); beat(); } else document.getElementById('who').textContent = '';
   document.getElementById('out').style.display = user ? '' : 'none';
   const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
   app.className = '';
@@ -102,6 +103,8 @@ async function route() {
   if (!user) { location.hash = '#/login'; return; }
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
+  if (parts[0] === 'facechat') return faceChatPage();
+  if (parts[0] === 'call') return callPage(parts[1], parts[2]);
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
   if (parts[0] === 'live') return parts[1] ? watchLivePage(parts[1]) : livePage();
@@ -112,7 +115,7 @@ async function route() {
   return homePage();
 }
 window.addEventListener('hashchange', route);
-document.getElementById('out').onclick = async () => { await sb.auth.signOut(); };
+document.getElementById('out').onclick = () => signOutNow();
 
 /* ---------- Login ---------- */
 function loginPage() {
@@ -326,7 +329,7 @@ async function settingsPage() {
     <p class="dim">Signed in as ${esc(user.email)}</p><button id="so" style="background:#6b6890">Sign out</button>`;
   const $ = id => document.getElementById(id);
   const say = (t, bad) => { $('msg').className = bad ? 'err' : 'dim'; $('msg').textContent = t; };
-  $('so').onclick = () => sb.auth.signOut();
+  $('so').onclick = () => signOutNow();
   $('pic').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     if (f.size > 5 * 1024 * 1024) return say('Picture must be under 5 MB.', true);
@@ -729,10 +732,185 @@ function faceChatHost(ch, myId) {
   return () => closeGuest(true);
 }
 
+/* ---------- FaceChat page: see who is online, invite them, talk face to face ---------- */
+async function signOutNow() {
+  if (user) await sb.from('online_users').delete().eq('user_id', user.id);
+  await sb.auth.signOut();
+}
+// "online" = a heartbeat in the last 75 seconds
+async function beat() { if (user && sb) await sb.from('online_users').upsert({ user_id: user.id }); }
+setInterval(beat, 20000);
+
+// everyone listens on their own inbox so invites pop up on any page
+let inbox = null, inboxFor = null;
+function ensureInbox() {
+  if (inbox && inboxFor === user.id) return;
+  if (inbox) sb.removeChannel(inbox);
+  inboxFor = user.id;
+  inbox = sb.channel('inbox-' + user.id, { config: { broadcast: { self: false } } })
+    .on('broadcast', { event: 'fc-invite' }, ({ payload }) => showInvite(payload))
+    .on('broadcast', { event: 'fc-declined' }, ({ payload }) => window.dispatchEvent(new CustomEvent('fc-declined', { detail: payload })))
+    .subscribe();
+}
+function sendToInbox(targetId, event, payload) {
+  const c = sb.channel('inbox-' + targetId, { config: { broadcast: { self: false } } });
+  c.subscribe(st => {
+    if (st !== 'SUBSCRIBED') return;
+    c.send({ type: 'broadcast', event, payload });
+    setTimeout(() => sb.removeChannel(c), 1500);
+  });
+}
+function showInvite(p) {
+  document.getElementById('invite')?.remove();
+  const el = document.createElement('div'); el.id = 'invite';
+  el.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:50;background:#fff;color:#2d2a4a;padding:16px 18px;border-radius:16px;box-shadow:0 10px 30px #7873f566;max-width:300px';
+  el.innerHTML = `📹 <b>${esc(p.name)}</b> is inviting you to a FaceChat<br><br><button id="inyes">Accept</button> <button id="inno" style="background:#6b6890">Decline</button>`;
+  document.body.appendChild(el);
+  const tm = setTimeout(() => el.remove(), 30000);
+  el.querySelector('#inyes').onclick = () => { clearTimeout(tm); el.remove(); location.hash = `#/call/${p.room}/b`; };
+  el.querySelector('#inno').onclick = () => { clearTimeout(tm); el.remove(); sendToInbox(p.from, 'fc-declined', { room: p.room }); };
+}
+function startCall(targetId) {
+  const room = crypto.randomUUID();
+  const nm = myProfile?.display_name || myProfile?.username || 'Someone';
+  sendToInbox(targetId, 'fc-invite', { from: user.id, name: nm, room });
+  location.hash = `#/call/${room}/a`;
+}
+
+async function faceChatPage() {
+  app.innerHTML = `<h2>📹 FaceChat</h2>
+    <p class="dim">Invite someone who is online to a video call. They get a pop-up and can accept or decline.</p>
+    <input id="fcq" placeholder="🔍 Search people" style="width:280px"><div id="people"><p class="dim">Loading...</p></div>`;
+  const $ = id => document.getElementById(id);
+  let online = [], onlineIds = new Set();
+  const row = (p, isOn) => {
+    const nm = p.display_name || p.username;
+    return `<div style="display:flex;align-items:center;gap:12px;background:#fff;border-radius:16px;padding:10px 14px;margin:8px 0;box-shadow:0 4px 14px #7873f51f;max-width:520px">
+      ${avHtml(p.avatar_path, nm, 44)}
+      <div style="flex:1"><div style="font-weight:600">${esc(nm)}</div>
+        <div class="dim">@${esc(p.username)} · <span style="color:${isOn ? '#16a34a' : '#9a98b5'}">● ${isOn ? 'Online' : 'Offline'}</span></div></div>
+      ${isOn ? `<button data-inv="${esc(p.id)}">Invite</button>` : ''}</div>`;
+  };
+  const draw = async () => {
+    const q = ($('fcq')?.value || '').replace(/[,()%_*\\]/g, ' ').trim();
+    let list = online;
+    if (q) {
+      const { data } = await sb.from('profiles').select('id, username, display_name, avatar_path')
+        .or(`display_name.ilike.%${q}%,username.ilike.%${q}%`).neq('id', user.id).limit(30);
+      list = data || [];
+    }
+    const box = $('people'); if (!box) return;
+    box.innerHTML = list.length ? list.map(p => row(p, onlineIds.has(p.id))).join('')
+      : `<p class="dim">${q ? 'Nobody found.' : 'Nobody else is online right now.'}</p>`;
+  };
+  const refresh = async () => {
+    const { data } = await sb.from('online_now').select('*').neq('id', user.id);
+    online = data || []; onlineIds = new Set(online.map(p => p.id));
+    draw();
+  };
+  $('people').onclick = e => { const b = e.target.closest('[data-inv]'); if (b) startCall(b.dataset.inv); };
+  $('fcq').oninput = draw;
+  refresh();
+  const t = setInterval(refresh, 5000);
+  onLeave(() => clearInterval(t));
+}
+
+/* One-to-one call */
+async function callPage(room, role) {
+  app.innerHTML = `<h2>📹 FaceChat</h2><p id="cs" class="dim">Starting camera...</p>
+    <div class="vwrap" style="max-width:720px"><video id="rem" autoplay playsinline></video></div>
+    <video id="loc" muted autoplay playsinline style="width:180px"></video>
+    <div><button id="mic">🎤 Mute</button> <button id="cam">📷 Camera off</button> <button id="bye" style="background:#e11d48">End call</button></div>`;
+  const $ = id => document.getElementById(id);
+  const say = t => { const el = $('cs'); if (el) el.textContent = t; };
+  let local, pc = null, gotOffer = false, timers = [], ch;
+  const early = [];
+  try { local = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true }); }
+  catch (e) { return say('Could not access camera/mic: ' + e.message); }
+  if (!$('loc')) { local.getTracks().forEach(t => t.stop()); return; } // you already left this page
+  $('loc').srcObject = local;
+  ch = sb.channel('fc-room-' + room, { config: { broadcast: { self: false } } });
+  const onDeclined = e => { if (e.detail.room === room) say('They declined the invite.'); };
+  window.addEventListener('fc-declined', onDeclined);
+  onLeave(() => {
+    timers.forEach(clearTimeout); timers.forEach(clearInterval);
+    window.removeEventListener('fc-declined', onDeclined);
+    ch.send({ type: 'broadcast', event: 'bye', payload: { from: user.id } });
+    setTimeout(() => sb.removeChannel(ch), 500);
+    pc?.close(); local.getTracks().forEach(t => t.stop());
+  });
+  const makePc = async () => {
+    pc?.close();
+    const mine = pc = new RTCPeerConnection(await getIce());
+    local.getTracks().forEach(t => mine.addTrack(t, local));
+    mine.ontrack = e => { const v = $('rem'); if (v) v.srcObject = e.streams[0]; };
+    mine.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { from: user.id, candidate: e.candidate } });
+    mine.onconnectionstatechange = () => {
+      if (mine !== pc) return;
+      const st = mine.connectionState;
+      if (st === 'connected') say('Connected');
+      else if (st === 'failed') say("Couldn't connect. Some school or work networks block video calls.");
+      else if (st === 'disconnected') say('Connection lost.');
+    };
+    early.splice(0).forEach(c => addIce(mine, c));
+    return mine;
+  };
+  ch.on('broadcast', { event: 'ready' }, async () => {
+      if (role !== 'a') return;
+      const mine = await makePc();
+      await mine.setLocalDescription(await mine.createOffer());
+      ch.send({ type: 'broadcast', event: 'offer', payload: { from: user.id, sdp: mine.localDescription } });
+    })
+    .on('broadcast', { event: 'offer' }, async ({ payload }) => {
+      if (role !== 'b') return;
+      gotOffer = true;
+      const mine = await makePc();
+      await mine.setRemoteDescription(payload.sdp); await flushIce(mine);
+      await mine.setLocalDescription(await mine.createAnswer());
+      ch.send({ type: 'broadcast', event: 'answer', payload: { from: user.id, sdp: mine.localDescription } });
+    })
+    .on('broadcast', { event: 'answer' }, async ({ payload }) => {
+      if (role !== 'a' || !pc) return;
+      await pc.setRemoteDescription(payload.sdp); await flushIce(pc);
+    })
+    .on('broadcast', { event: 'ice' }, ({ payload }) => {
+      if (payload.from === user.id) return;
+      if (pc) addIce(pc, payload.candidate); else early.push(payload.candidate);
+    })
+    .on('broadcast', { event: 'bye' }, () => {
+      say('The other person ended the call.');
+      pc?.close(); const v = $('rem'); if (v) v.srcObject = null;
+    })
+    .subscribe(st => {
+      if (st !== 'SUBSCRIBED') return;
+      if (role === 'a') {
+        say('Calling... waiting for them to accept.');
+        timers.push(setTimeout(() => { if (!pc) say('No answer. They may be busy or offline.'); }, 45000));
+      } else {
+        say('Connecting...');
+        const ready = () => ch.send({ type: 'broadcast', event: 'ready', payload: { from: user.id } });
+        ready();
+        let n = 0;
+        const iv = setInterval(() => { if (gotOffer || ++n > 10) return clearInterval(iv); ready(); }, 3000);
+        timers.push(iv);
+      }
+    });
+  $('mic').onclick = () => {
+    const t = local.getAudioTracks()[0]; if (!t) return;
+    t.enabled = !t.enabled; $('mic').textContent = t.enabled ? '🎤 Mute' : '🔇 Unmute';
+  };
+  $('cam').onclick = () => {
+    const t = local.getVideoTracks()[0]; if (!t) return;
+    t.enabled = !t.enabled; $('cam').textContent = t.enabled ? '📷 Camera off' : '📷 Camera on';
+  };
+  $('bye').onclick = () => { location.hash = '#/facechat'; };
+}
+
 /* Lobby: who is live right now (streamers send a heartbeat; a stream counts as live for 45 seconds after the last one) */
 function livePage() {
-  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
+  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button> <button id="fcgo" style="background:linear-gradient(90deg,#4ade80,#22c3e6)">📹 FaceChat</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
   document.getElementById('golive').onclick = () => { location.hash = '#/golive'; };
+  document.getElementById('fcgo').onclick = () => { location.hash = '#/facechat'; };
   async function draw() {
     const { data, error } = await sb.from('live_now').select('*');
     const box = document.getElementById('lives'); if (!box) return;
@@ -748,12 +926,37 @@ function livePage() {
   onLeave(() => clearInterval(t));
 }
 
+/* What you are streaming: face, screen, or screen with a face bubble */
+async function getLiveMedia(kind) {
+  if (kind === 'face') {
+    const s = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true });
+    return { main: s, cam: null, out: s.getTracks(), all: s.getTracks() };
+  }
+  const all = [];
+  const d = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: true });
+  all.push(...d.getTracks());
+  let mic = null, camV = null;
+  try { // your mic (and camera for face + screen); the stream still works if you say no
+    const m = await navigator.mediaDevices.getUserMedia({ audio: true, video: kind === 'both' ? { height: 240 } : false });
+    all.push(...m.getTracks());
+    mic = m.getAudioTracks()[0] || null; camV = m.getVideoTracks()[0] || null;
+  } catch (e) {}
+  const screenV = d.getVideoTracks()[0];
+  const audio = mic || d.getAudioTracks()[0] || null;
+  const main = new MediaStream([screenV, ...(audio ? [audio] : [])]);
+  const cam = camV ? new MediaStream([camV]) : null;
+  return { main, cam, out: [screenV, ...(audio ? [audio] : []), ...(camV ? [camV] : [])], all };
+}
+
 /* Streamer */
 async function goLivePage() {
   app.innerHTML = `<h2>Go live</h2>
     <div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
-      <div class="vwrap"><video id="prev" autoplay muted playsinline></video><div class="pop" id="pop"></div></div>
-      <div id="setup"><input id="ttl" placeholder="Stream title" style="width:260px"><button id="start">Go live</button></div>
+      <div class="vwrap"><video id="prev" autoplay muted playsinline></video><video id="prevcam" muted autoplay playsinline style="display:none;position:absolute;right:12px;bottom:12px;width:26%;max-width:180px;margin:0;border-radius:12px;box-shadow:0 6px 20px #0006"></video><div class="pop" id="pop"></div></div>
+      <div id="setup"><h3>What kind of stream?</h3>
+        <div id="kinds" style="margin-bottom:10px"><button class="chip on" data-k="face">🙂 Face</button> <button class="chip" data-k="screen">🖥 Screen</button> <button class="chip" data-k="both">🖥 + 🙂 Face and screen</button></div>
+        <p id="kdesc" class="dim" style="margin:0 0 12px">Your camera and mic.</p>
+        <input id="ttl" placeholder="Stream title" style="width:260px"><button id="start">Go live</button></div>
       <div id="onair" style="display:none"><b style="color:#e11d48">● You are live</b> · <span id="vc">0</span> watching <button id="end" style="margin-left:10px">End stream</button><br><span class="dim">Press End stream (not the back button) so you can save a copy.</span></div>
       <div id="fcreq" style="display:none;background:#fff;border-radius:14px;padding:12px;margin:10px 0;box-shadow:0 6px 20px #7873f524">📹 <b id="fcreqn"></b> wants to FaceChat <button id="fcyes">Accept</button> <button id="fcno" style="background:#6b6890">Decline</button></div>
       <div id="fc" style="display:none"><h3>📹 FaceChat with <span id="fcn"></span></h3><video id="fcvid" autoplay playsinline></video><button id="fcend" style="background:#e11d48">End FaceChat</button> <span class="dim">Use headphones to avoid echo.</span></div>
@@ -765,14 +968,25 @@ async function goLivePage() {
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
   const $ = id => document.getElementById(id);
   const name = await myName();
-  let stream, ch, beat, rec, blob, streamTitle = '', fcStop = null; const pcs = {};
+  let stream, ch, beat, rec, blob, streamTitle = '', fcStop = null, kind = 'face', outTracks = [], allTracks = []; const pcs = {};
   let chunks = [], recSize = 0, t0 = 0, capAt = 0, ending = false;
+  const kdesc = { face: 'Your camera and mic.', screen: 'Your screen (choose a tab, a window or the whole screen) plus your mic.', both: 'Your screen with your camera in a small bubble in the corner, plus your mic.' };
+  const canScreen = !!navigator.mediaDevices?.getDisplayMedia;
+  document.querySelectorAll('#kinds [data-k]').forEach(b => {
+    if (!canScreen && b.dataset.k !== 'face') { b.disabled = true; b.style.opacity = .45; }
+    b.onclick = () => {
+      kind = b.dataset.k;
+      document.querySelectorAll('#kinds [data-k]').forEach(x => x.classList.toggle('on', x === b));
+      $('kdesc').textContent = kdesc[kind];
+    };
+  });
+  if (!canScreen) $('kdesc').textContent = 'Your camera and mic. (Screen sharing is not available on this device.)';
   const count = () => { const el = $('vc'); if (el) el.textContent = Object.values(pcs).filter(pc => pc.connectionState === 'connected').length; };
   const stopBroadcast = () => {
     clearInterval(beat);
     fcStop?.(); fcStop = null;
     Object.values(pcs).forEach(pc => pc.close());
-    stream?.getTracks().forEach(t => t.stop());
+    allTracks.forEach(t => t.stop()); stream?.getTracks().forEach(t => t.stop());
     if (ch) { sb.removeChannel(ch); ch = null; }
     sb.from('live_streams').delete().eq('host_id', user.id).then(() => {});
   };
@@ -813,9 +1027,14 @@ async function goLivePage() {
   };
   $('start').onclick = async () => {
     const title = $('ttl').value.trim().slice(0, 100) || 'Live stream';
-    try { stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true }); }
-    catch (e) { return $('msg').textContent = 'Could not access camera/mic: ' + e.message; }
+    let got;
+    try { got = await getLiveMedia(kind); }
+    catch (e) { return $('msg').textContent = (kind === 'face' ? 'Could not access camera/mic: ' : 'Could not start screen sharing: ') + e.message; }
+    stream = got.main; outTracks = got.out; allTracks = got.all;
     $('prev').srcObject = stream;
+    if (got.cam) { $('prevcam').srcObject = got.cam; $('prevcam').style.display = ''; }
+    // if you stop sharing from the browser's own button, the stream ends and offers to save
+    stream.getVideoTracks()[0].onended = () => { if (!ending) $('end').click(); };
     $('setup').style.display = 'none'; $('onair').style.display = '';
     streamTitle = title;
     try { // record a copy on this device while streaming
@@ -836,7 +1055,7 @@ async function goLivePage() {
         const viewer = payload.from;
         pcs[viewer]?.close();
         const pc = new RTCPeerConnection(await getIce()); pcs[viewer] = pc;
-        stream.getTracks().forEach(t => pc.addTrack(t, stream));
+        outTracks.forEach(t => pc.addTrack(t, stream));
         pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: viewer, from: user.id, candidate: e.candidate } });
         pc.onconnectionstatechange = count;
         await pc.setLocalDescription(await pc.createOffer());
@@ -863,7 +1082,7 @@ async function goLivePage() {
 async function watchLivePage(hostId) {
   const name = await myName();
   app.innerHTML = `<div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
-      <h2>🔴 Live</h2><div class="vwrap"><video id="lv" controls autoplay playsinline></video><div class="pop" id="pop"></div></div>
+      <h2>🔴 Live</h2><div class="vwrap"><video id="lv" controls autoplay playsinline></video><video id="lvcam" muted autoplay playsinline style="display:none;position:absolute;right:12px;bottom:56px;width:26%;max-width:180px;margin:0;border-radius:12px;box-shadow:0 6px 20px #0006"></video><div class="pop" id="pop"></div></div>
       <p id="st" class="dim">Connecting...</p>
       <p><button id="fcbtn">📹 FaceChat</button> <span id="fcs" class="dim"></span></p>
       <video id="fcself" muted autoplay playsinline style="display:none;width:180px"></video></div>
@@ -877,7 +1096,14 @@ async function watchLivePage(hostId) {
       if (payload.to !== user.id) return;
       pc?.close();
       const mine = pc = new RTCPeerConnection(await getIce());
-      pc.ontrack = e => { const v = document.getElementById('lv'); if (v) v.srcObject = e.streams[0]; };
+      const mainS = new MediaStream(), camS = new MediaStream(); let vCount = 0;
+      const c0 = document.getElementById('lvcam'); if (c0) c0.style.display = 'none';
+      pc.ontrack = e => {
+        const t = e.track;
+        if (t.kind === 'video' && vCount++ >= 1) { // second video = the streamer's camera bubble
+          camS.addTrack(t); const c = document.getElementById('lvcam'); if (c) { c.srcObject = camS; c.style.display = ''; }
+        } else { mainS.addTrack(t); const v = document.getElementById('lv'); if (v) v.srcObject = mainS; }
+      };
       pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: hostId, from: user.id, candidate: e.candidate } });
       pc.onconnectionstatechange = () => {
         if (mine !== pc) return;
