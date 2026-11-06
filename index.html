@@ -50,6 +50,7 @@
   .delbtn{position:absolute;top:8px;right:8px;width:34px;height:34px;padding:0;font-size:15px;background:#e11d48;z-index:2}
   .chip{background:#fff;color:var(--ink);box-shadow:0 2px 8px #7873f526;padding:7px 16px}
   .chip.on{background:linear-gradient(90deg,var(--p1),var(--p2));color:#fff}
+  nav:not(.in) .mem, nav:not(.in) #me, nav:not(.in) #who, nav:not(.in) #out{display:none !important}
   main.full{padding:0;max-width:none}
   .reel{height:calc(100vh - 52px);height:calc(100dvh - 52px);overflow-y:scroll;scroll-snap-type:y mandatory;
         background:linear-gradient(160deg,#6a11cb,#2575fc 60%,#ff6ec4)}
@@ -67,11 +68,11 @@
 <body>
 <nav>
   <a href="#/" class="brand">▶ ZTube</a>
-  <input id="q" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
-  <a href="#/shorts">Shorts</a>
-  <a href="#/live" id="livelink">🔴 Live</a>
-  <a href="#/facechat">📹 FaceChat</a>
-  <a href="#/record">Record / Upload</a>
+  <input id="q" class="mem" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
+  <a href="#/shorts" class="mem">Shorts</a>
+  <a href="#/live" id="livelink" class="mem">🔴 Live</a>
+  <a href="#/facechat" class="mem">📹 FaceChat</a>
+  <a href="#/record" class="mem">Record / Upload</a>
   <span style="flex:1"></span>
   <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
   <span id="who" class="dim"></span>
@@ -94,13 +95,16 @@ async function route() {
   cleanup(); cleanup = () => {};
   const { data } = await sb.auth.getSession();
   user = data.session?.user || null;
-  document.getElementById('me').style.display = user ? 'flex' : 'none';
-  if (user) { loadMe(); ensureInbox(); beat(); } else document.getElementById('who').textContent = '';
-  document.getElementById('out').style.display = user ? '' : 'none';
+  const member = user ? await checkMember() : false;
+  document.querySelector('nav').classList.toggle('in', !!(user && member));
+  document.getElementById('me').style.display = user && member ? 'flex' : 'none';
+  if (user && member) { loadMe(); ensureInbox(); beat(); } else document.getElementById('who').textContent = '';
+  document.getElementById('out').style.display = user && member ? '' : 'none';
   const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
   app.className = '';
   if (parts[0] === 'login') return loginPage();
   if (!user) { location.hash = '#/login'; return; }
+  if (!member) return unlockPage();
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
   if (parts[0] === 'facechat') return faceChatPage();
@@ -117,12 +121,40 @@ async function route() {
 window.addEventListener('hashchange', route);
 document.getElementById('out').onclick = () => signOutNow();
 
+/* ---------- Access code lock ---------- */
+let memberFor = null;
+async function checkMember() {
+  if (memberFor === user.id) return true;
+  const { data } = await sb.from('members').select('user_id').eq('user_id', user.id).maybeSingle();
+  if (data) memberFor = user.id;
+  return !!data;
+}
+function unlockPage() {
+  app.innerHTML = `<div style="max-width:340px;margin:60px auto"><h2>🔒 ZTube is private</h2>
+    <p class="dim">Enter the access code you were given to get in.</p>
+    <input id="code" type="password" placeholder="Access code" style="width:100%"><br>
+    <button id="unlock">Unlock</button> <button id="so2" style="background:#6b6890">Sign out</button>
+    <p id="msg" class="err"></p></div>`;
+  const $ = id => document.getElementById(id);
+  const go = async () => {
+    $('msg').textContent = '';
+    const { data, error } = await sb.rpc('redeem_access_code', { p_code: $('code').value });
+    if (error) return $('msg').textContent = error.message;
+    if (!data) return $('msg').textContent = 'Wrong code.';
+    memberFor = user.id; route();
+  };
+  $('unlock').onclick = go;
+  $('code').onkeydown = e => { if (e.key === 'Enter') go(); };
+  $('so2').onclick = () => signOutNow();
+}
+
 /* ---------- Login ---------- */
 function loginPage() {
   app.innerHTML = `<div style="max-width:320px;margin:60px auto"><h2>Sign in</h2>
     <input id="em" placeholder="Email" style="width:100%;box-sizing:border-box">
     <input id="pw" type="password" placeholder="Password (6+ characters)" style="width:100%;box-sizing:border-box">
-    <button id="in">Sign in</button> <button id="up">Create account</button><p id="msg" class="err"></p></div>`;
+    <button id="in">Sign in</button> <button id="up">Create account</button><p id="msg" class="err"></p>
+    <p class="dim">New here? Create an account, then enter the access code you were given.</p></div>`;
   const msg = document.getElementById('msg');
   async function go(mode) {
     msg.textContent = '';
@@ -1169,7 +1201,7 @@ async function boot() {
 }
 async function updateLiveDot() {
   const el = document.getElementById('livelink');
-  if (!el || !user || document.hidden) return;
+  if (!el || !user || memberFor !== user.id || document.hidden) return;
   const { count } = await sb.from('live_now').select('*', { count: 'exact', head: true });
   el.textContent = count ? `🔴 Live (${count})` : '🔴 Live';
 }
