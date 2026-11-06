@@ -74,7 +74,7 @@
   <span style="flex:1"></span>
   <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
   <span id="who" class="dim"></span>
-  <span class="dim" style="font-size:11px">Beta 2.0</span>
+  <span class="dim" style="font-size:11px">beta 2.0</span>
   <a href="#/login" id="out" style="display:none">Sign out</a>
 </nav>
 <main id="app"></main>
@@ -520,6 +520,21 @@ async function shortsPage() {
 
 /* ---------- Livestream (free, peer-to-peer: video goes straight from streamer to viewers) ---------- */
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
+// ---- Free relay so live video can get through school/strict networks ----
+// Sign up free at metered.ca, create an app, then put its name and API key here:
+const METERED_APP = 'ztube';   // the part before .metered.live, e.g. 'ztube'
+const METERED_KEY = '047899aad9ccb84c486a967a0a4798791d35';   // your API key from the Metered dashboard
+let iceCache = null;
+async function getIce() {
+  if (iceCache) return iceCache;
+  if (METERED_APP && METERED_KEY) {
+    try {
+      const r = await fetch(`https://${METERED_APP}.metered.live/api/v1/turn/credentials?apiKey=${METERED_KEY}`);
+      if (r.ok) { iceCache = { iceServers: [...ICE.iceServers, ...(await r.json())] }; return iceCache; }
+    } catch (e) {}
+  }
+  return ICE;
+}
 let myNameCache = null;
 async function myName() {
   if (!myNameCache) {
@@ -636,7 +651,7 @@ async function goLivePage() {
     ch.on('broadcast', { event: 'join' }, async ({ payload }) => {
         const viewer = payload.from;
         pcs[viewer]?.close();
-        const pc = new RTCPeerConnection(ICE); pcs[viewer] = pc;
+        const pc = new RTCPeerConnection(await getIce()); pcs[viewer] = pc;
         stream.getTracks().forEach(t => pc.addTrack(t, stream));
         pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: viewer, from: user.id, candidate: e.candidate } });
         pc.onconnectionstatechange = count;
@@ -674,7 +689,7 @@ async function watchLivePage(hostId) {
   ch.on('broadcast', { event: 'offer' }, async ({ payload }) => {
       if (payload.to !== user.id) return;
       pc?.close();
-      const mine = pc = new RTCPeerConnection(ICE);
+      const mine = pc = new RTCPeerConnection(await getIce());
       pc.ontrack = e => { const v = document.getElementById('lv'); if (v) v.srcObject = e.streams[0]; };
       pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'ice', payload: { to: hostId, from: user.id, candidate: e.candidate } });
       pc.onconnectionstatechange = () => {
