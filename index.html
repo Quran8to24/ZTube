@@ -630,6 +630,105 @@ function wireChat(ch, name) {
   ch.on('broadcast', { event: 'chat' }, ({ payload }) => { addChat(payload.name, payload.text, payload.hl === true); if (payload.hl === true) popup(payload.name, payload.text); });
 }
 
+/* ---------- FaceChat: a viewer shares cam + mic with the streamer and you talk both ways ---------- */
+// viewer side
+function faceChatViewer(ch, hostId, name) {
+  const $ = id => document.getElementById(id);
+  let local = null, pc = null;
+  const say = t => { const el = $('fcs'); if (el) el.textContent = t; };
+  const stop = notify => {
+    if (notify && local) ch.send({ type: 'broadcast', event: 'fc-end', payload: { from: user.id, to: hostId } });
+    pc?.close(); pc = null;
+    local?.getTracks().forEach(t => t.stop()); local = null;
+    const v = $('fcself'); if (v) { v.srcObject = null; v.style.display = 'none'; }
+    const b = $('fcbtn'); if (b) b.textContent = '📹 FaceChat';
+  };
+  $('fcbtn').onclick = async () => {
+    if (local) { stop(true); say(''); return; }
+    try { local = await navigator.mediaDevices.getUserMedia({ video: { height: 360 }, audio: true }); }
+    catch (e) { return say('Could not access camera/mic: ' + e.message); }
+    $('fcself').srcObject = local; $('fcself').style.display = '';
+    $('fcbtn').textContent = '⏹ End FaceChat';
+    say('Asking the streamer to FaceChat...');
+    ch.send({ type: 'broadcast', event: 'fc-request', payload: { from: user.id, to: hostId, name } });
+  };
+  ch.on('broadcast', { event: 'fc-accept' }, async ({ payload }) => {
+      if (payload.to !== user.id || !local) return;
+      say('Connecting...');
+      const mine = pc = new RTCPeerConnection(await getIce());
+      local.getTracks().forEach(t => mine.addTrack(t, local));
+      mine.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'fc-ice', payload: { to: hostId, from: user.id, candidate: e.candidate } });
+      mine.onconnectionstatechange = () => {
+        if (mine !== pc) return;
+        if (mine.connectionState === 'connected') say('FaceChat is on. The streamer can see and hear you.');
+        else if (mine.connectionState === 'failed') say("Couldn't connect FaceChat.");
+      };
+      await mine.setLocalDescription(await mine.createOffer());
+      ch.send({ type: 'broadcast', event: 'fc-offer', payload: { to: hostId, from: user.id, sdp: mine.localDescription } });
+    })
+    .on('broadcast', { event: 'fc-answer' }, async ({ payload }) => {
+      if (payload.to !== user.id || !pc) return;
+      await pc.setRemoteDescription(payload.sdp); await flushIce(pc);
+    })
+    .on('broadcast', { event: 'fc-ice' }, ({ payload }) => {
+      if (payload.to === user.id && payload.from === hostId && pc) addIce(pc, payload.candidate);
+    })
+    .on('broadcast', { event: 'fc-decline' }, ({ payload }) => {
+      if (payload.to !== user.id) return;
+      stop(false); say(payload.busy ? 'The streamer is already in a FaceChat.' : 'The streamer declined.');
+    })
+    .on('broadcast', { event: 'fc-end' }, ({ payload }) => {
+      if (payload.to !== user.id) return;
+      stop(false); say('FaceChat ended.');
+    });
+  return () => stop(true);
+}
+// streamer side: accept one viewer at a time
+function faceChatHost(ch, myId) {
+  const $ = id => document.getElementById(id);
+  let guest = null, pc = null, pending = null;
+  const closeGuest = notify => {
+    if (notify && guest) ch.send({ type: 'broadcast', event: 'fc-end', payload: { from: myId, to: guest } });
+    pc?.close(); pc = null; guest = null;
+    const v = $('fcvid'); if (v) v.srcObject = null;
+    if ($('fc')) $('fc').style.display = 'none';
+  };
+  ch.on('broadcast', { event: 'fc-request' }, ({ payload }) => {
+      if (payload.to !== myId) return;
+      if (guest || pending) return ch.send({ type: 'broadcast', event: 'fc-decline', payload: { to: payload.from, busy: true } });
+      pending = payload.from;
+      $('fcreqn').textContent = payload.name; $('fcreq').style.display = '';
+    })
+    .on('broadcast', { event: 'fc-offer' }, async ({ payload }) => {
+      if (payload.to !== myId || payload.from !== guest || !pc) return;
+      await pc.setRemoteDescription(payload.sdp); await flushIce(pc);
+      await pc.setLocalDescription(await pc.createAnswer());
+      ch.send({ type: 'broadcast', event: 'fc-answer', payload: { to: guest, from: myId, sdp: pc.localDescription } });
+    })
+    .on('broadcast', { event: 'fc-ice' }, ({ payload }) => {
+      if (payload.to === myId && payload.from === guest && pc) addIce(pc, payload.candidate);
+    })
+    .on('broadcast', { event: 'fc-end' }, ({ payload }) => {
+      if (payload.to === myId && payload.from === guest) closeGuest(false);
+    });
+  $('fcyes').onclick = async () => {
+    guest = pending; pending = null;
+    $('fcreq').style.display = 'none';
+    $('fcn').textContent = $('fcreqn').textContent; $('fc').style.display = '';
+    const who = guest;
+    pc = new RTCPeerConnection(await getIce());
+    pc.ontrack = e => { const v = $('fcvid'); if (v) v.srcObject = e.streams[0]; };
+    pc.onicecandidate = e => e.candidate && ch.send({ type: 'broadcast', event: 'fc-ice', payload: { to: who, from: myId, candidate: e.candidate } });
+    ch.send({ type: 'broadcast', event: 'fc-accept', payload: { to: who } });
+  };
+  $('fcno').onclick = () => {
+    ch.send({ type: 'broadcast', event: 'fc-decline', payload: { to: pending } });
+    pending = null; $('fcreq').style.display = 'none';
+  };
+  $('fcend').onclick = () => closeGuest(true);
+  return () => closeGuest(true);
+}
+
 /* Lobby: who is live right now (streamers send a heartbeat; a stream counts as live for 45 seconds after the last one) */
 function livePage() {
   app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
@@ -656,6 +755,8 @@ async function goLivePage() {
       <div class="vwrap"><video id="prev" autoplay muted playsinline></video><div class="pop" id="pop"></div></div>
       <div id="setup"><input id="ttl" placeholder="Stream title" style="width:260px"><button id="start">Go live</button></div>
       <div id="onair" style="display:none"><b style="color:#e11d48">● You are live</b> · <span id="vc">0</span> watching <button id="end" style="margin-left:10px">End stream</button><br><span class="dim">Press End stream (not the back button) so you can save a copy.</span></div>
+      <div id="fcreq" style="display:none;background:#fff;border-radius:14px;padding:12px;margin:10px 0;box-shadow:0 6px 20px #7873f524">📹 <b id="fcreqn"></b> wants to FaceChat <button id="fcyes">Accept</button> <button id="fcno" style="background:#6b6890">Decline</button></div>
+      <div id="fc" style="display:none"><h3>📹 FaceChat with <span id="fcn"></span></h3><video id="fcvid" autoplay playsinline></video><button id="fcend" style="background:#e11d48">End FaceChat</button> <span class="dim">Use headphones to avoid echo.</span></div>
       <div id="savebox" style="display:none"><h3>Stream ended</h3><video id="rv" controls playsinline></video><p id="si" class="dim"></p>
         <p><b>Save this stream to your channel?</b></p>
         <input id="stt" placeholder="Title" style="width:260px"><br>
@@ -664,11 +765,12 @@ async function goLivePage() {
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
   const $ = id => document.getElementById(id);
   const name = await myName();
-  let stream, ch, beat, rec, blob, streamTitle = ''; const pcs = {};
+  let stream, ch, beat, rec, blob, streamTitle = '', fcStop = null; const pcs = {};
   let chunks = [], recSize = 0, t0 = 0, capAt = 0, ending = false;
   const count = () => { const el = $('vc'); if (el) el.textContent = Object.values(pcs).filter(pc => pc.connectionState === 'connected').length; };
   const stopBroadcast = () => {
     clearInterval(beat);
+    fcStop?.(); fcStop = null;
     Object.values(pcs).forEach(pc => pc.close());
     stream?.getTracks().forEach(t => t.stop());
     if (ch) { sb.removeChannel(ch); ch = null; }
@@ -729,6 +831,7 @@ async function goLivePage() {
     } catch (e) { rec = null; }
     ch = sb.channel('live-' + user.id, { config: { broadcast: { self: false } } });
     wireChat(ch, name);
+    fcStop = faceChatHost(ch, user.id);
     ch.on('broadcast', { event: 'join' }, async ({ payload }) => {
         const viewer = payload.from;
         pcs[viewer]?.close();
@@ -761,12 +864,15 @@ async function watchLivePage(hostId) {
   const name = await myName();
   app.innerHTML = `<div style="display:flex;gap:20px;flex-wrap:wrap"><div style="flex:2;min-width:300px">
       <h2>🔴 Live</h2><div class="vwrap"><video id="lv" controls autoplay playsinline></video><div class="pop" id="pop"></div></div>
-      <p id="st" class="dim">Connecting...</p></div>
+      <p id="st" class="dim">Connecting...</p>
+      <p><button id="fcbtn">📹 FaceChat</button> <span id="fcs" class="dim"></span></p>
+      <video id="fcself" muted autoplay playsinline style="display:none;width:180px"></video></div>
       <div style="flex:1;min-width:260px">${chatHtml()}</div></div>`;
   const setSt = t => { const el = document.getElementById('st'); if (el) el.textContent = t; };
   let pc, connected = false, tries = 0, retry;
   const ch = sb.channel('live-' + hostId, { config: { broadcast: { self: false } } });
   wireChat(ch, name);
+  onLeave(faceChatViewer(ch, hostId, name));
   ch.on('broadcast', { event: 'offer' }, async ({ payload }) => {
       if (payload.to !== user.id) return;
       pc?.close();
