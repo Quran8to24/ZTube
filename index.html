@@ -105,7 +105,9 @@ async function route() {
   if (!user) { location.hash = '#/login'; return; }
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
-  if (parts[0] === 'facechat') return ownerGate();
+  if (ownerSession && parts[0] !== 'facechat') { ownerSession = false; ownerUnlocked = false; }
+  if (parts[0] === 'facechat') return ownerGateCheck(parts[1]);
+  if (parts[0] === 'fcredeem') return redeemInvitePage(parts.slice(1).join('/'));
   if (parts[0] === 'call') return callPage(parts[1], parts[2]);
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
@@ -636,10 +638,19 @@ function wireChat(ch, name) {
 }
 
 /* ---------- Owner Only gate ---------- */
-const OWNER_KEY = 'Nhsi7597'; // <-- replace this with your password
-let ownerUnlocked = false;
-function ownerGate() {
+const OWNER_KEY = 'Nhsi7597'; // <-- replace with your password
+const OWNER_SITE_URL = location.origin + location.pathname;
+let ownerUnlocked = false, ownerSession = false;
+
+async function ownerGateCheck(token) {
   if (ownerUnlocked) return faceChatPage();
+  const { data } = await sb.from('facechat_authorized').select('user_id').eq('user_id', user.id).maybeSingle();
+  if (data) { ownerUnlocked = true; ownerSession = false; return faceChatPage(); }
+  if (token) return redeemAndEnter(token);
+  showOwnerGate();
+}
+
+function showOwnerGate() {
   app.innerHTML = `<div style="max-width:320px;margin:60px auto;text-align:center">
     <h2>🔒 Owner Only</h2>
     <p class="dim">This area is restricted. Enter the password to continue.</p>
@@ -647,17 +658,78 @@ function ownerGate() {
     <button id="ogo">Enter</button>
     <p id="omsg" class="err" style="margin-top:10px"></p>
   </div>`;
+  const inp = document.getElementById('opw');
+  const btn = document.getElementById('ogo');
   const go = () => {
-    if (document.getElementById('opw').value === OWNER_KEY) {
-      ownerUnlocked = true; faceChatPage();
+    if (inp.value === OWNER_KEY) {
+      ownerUnlocked = true; ownerSession = false; faceChatPage();
     } else {
       document.getElementById('omsg').textContent = 'Wrong password.';
-      document.getElementById('opw').value = '';
-      document.getElementById('opw').focus();
+      inp.value = ''; inp.focus();
     }
   };
-  document.getElementById('ogo').onclick = go;
-  document.getElementById('opw').onkeydown = e => { if (e.key === 'Enter') go(); };
+  btn.addEventListener('click', go);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+}
+
+async function redeemAndEnter(token) {
+  app.innerHTML = '<p class="dim" style="padding:40px">Checking your invite...</p>';
+  const { data, error } = await sb.rpc('redeem_facechat_invite', { p_token: token });
+  if (error || !data?.ok) {
+    app.innerHTML = `<div style="max-width:360px;margin:60px auto;text-align:center">
+      <h2>🔒 Owner Only</h2>
+      <p class="err">${data?.reason === 'wrong_account' ? 'This invite was sent to a different email. Sign in with that account.' : 'This invite link has expired or already been used.'}</p>
+      <button onclick="showOwnerGate()">Enter password instead</button></div>`;
+    return;
+  }
+  ownerUnlocked = true; ownerSession = !data.permanent;
+  history.replaceState(null, '', location.pathname + '#/facechat');
+  faceChatPage();
+}
+
+async function redeemInvitePage(token) {
+  if (!user) { sessionStorage.setItem('fc_pending_token', token); location.hash = '#/login'; return; }
+  redeemAndEnter(token);
+}
+
+function inviteUI() {
+  return `<div id="invbox" style="background:#fff;border-radius:16px;padding:16px;box-shadow:0 6px 20px #7873f524;margin-bottom:16px;max-width:440px">
+    <h3 style="margin:0 0 10px">✉ Invite someone to Owner Only</h3>
+    <input id="invemail" type="email" placeholder="Their email address" style="width:220px;margin-bottom:8px">
+    <div style="margin:8px 0;display:flex;gap:16px;align-items:center">
+      <label style="cursor:pointer"><input type="radio" name="invt" id="invperm"> Forever unlocked</label>
+      <label style="cursor:pointer"><input type="radio" name="invt" id="invtemp" checked> Session only</label>
+    </div>
+    <button id="invsend">Send invite</button> <span id="invmsg" class="dim"></span>
+  </div>`;
+}
+
+async function sendInvite() {
+  const email = document.getElementById('invemail').value.trim();
+  const permanent = document.getElementById('invperm').checked;
+  const msg = document.getElementById('invmsg');
+  if (!email) return msg.textContent = 'Enter an email address.';
+  msg.textContent = 'Sending...'; msg.className = 'dim';
+  const { data: token, error } = await sb.rpc('create_facechat_invite', { p_email: email, p_permanent: permanent });
+  if (error || !token) { msg.className = 'err'; return msg.textContent = error?.message || 'Could not create invite.'; }
+  const link = `${OWNER_SITE_URL}#/fcredeem/${token}`;
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ENTER_YOUR_RESEND_KEY_HERE' },
+    body: JSON.stringify({
+      from: 'ZTube <onboarding@resend.dev>', to: [email],
+      subject: "You've been invited to Owner Only on ZTube",
+      html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;padding:32px">
+        <h2 style="background:linear-gradient(90deg,#ff6ec4,#7873f5);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin:0 0 16px">ZTube — Owner Only</h2>
+        <p>You've been invited to access the <b>Owner Only</b> area on ZTube.</p>
+        ${permanent ? '<p>This is a <b>permanent</b> invite — you will be unlocked every time you sign in.</p>' : '<p>This invite is for <b>one session only</b> — once you leave the page you will need a new invite.</p>'}
+        <p><a href="${link}" style="display:inline-block;padding:14px 32px;background:linear-gradient(90deg,#ff6ec4,#7873f5);color:#fff;border-radius:999px;text-decoration:none;font-weight:700">Open Owner Only</a></p>
+        <p style="color:#999;font-size:12px">This link expires in 48 hours and can only be used once.</p>
+      </div>`
+    })
+  });
+  if (res.ok) { msg.className = 'dim'; msg.textContent = `Invite sent to ${email} ✓`; document.getElementById('invemail').value = ''; }
+  else { msg.className = 'err'; msg.textContent = 'Email send failed. Add your Resend key in the code.'; }
 }
 
 /* ---------- FaceChat: a viewer shares cam + mic with the streamer and you talk both ways ---------- */
