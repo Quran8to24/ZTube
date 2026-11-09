@@ -805,7 +805,10 @@ function startCall(targetId) {
 }
 
 async function faceChatPage() {
-  app.innerHTML = `<h2>📹 FaceChat</h2>
+  const pt = sessionStorage.getItem('fc_pending_token');
+  if (pt) { sessionStorage.removeItem('fc_pending_token'); redeemAndEnter(pt); return; }
+  app.innerHTML = `<h2>🔒 Owner Only</h2>
+    ${ownerUnlocked && !ownerSession ? inviteUI() : ''}
     <p class="dim">Invite someone who is online to a video call. They get a pop-up and can accept or decline.</p>
     <input id="fcq" placeholder="🔍 Search people" style="width:280px"><div id="people"><p class="dim">Loading...</p></div>`;
   const $ = id => document.getElementById(id);
@@ -1189,6 +1192,7 @@ async function boot() {
   );
   sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT') { myProfile = null; location.hash = '#/login'; } });
   new MutationObserver(() => fillAvatars()).observe(document.body, { childList: true, subtree: true });
+  if (document.getElementById('invsend')) document.getElementById('invsend').onclick = sendInvite;
   document.getElementById('q').addEventListener('keydown', e => {
     const v = e.target.value.trim();
     if (e.key === 'Enter' && v) location.hash = '#/search/' + encodeURIComponent(v);
