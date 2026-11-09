@@ -71,7 +71,7 @@
   <input id="q" class="mem" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
   <a href="#/shorts" class="mem">Shorts</a>
   <a href="#/live" id="livelink" class="mem">🔴 Live</a>
-  <a href="#/facechat" class="mem">📹 FaceChat</a>
+  <a href="#/facechat" class="mem">🔒 Owner Only</a>
   <a href="#/record" class="mem">Record / Upload</a>
   <span style="flex:1"></span>
   <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
@@ -105,7 +105,7 @@ async function route() {
   if (!user) { location.hash = '#/login'; return; }
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
-  if (parts[0] === 'facechat') return faceChatPage();
+  if (parts[0] === 'facechat') return ownerGate();
   if (parts[0] === 'call') return callPage(parts[1], parts[2]);
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
@@ -635,6 +635,31 @@ function wireChat(ch, name) {
   ch.on('broadcast', { event: 'chat' }, ({ payload }) => { addChat(payload.name, payload.text, payload.hl === true); if (payload.hl === true) popup(payload.name, payload.text); });
 }
 
+/* ---------- Owner Only gate ---------- */
+const OWNER_KEY = 'Nhsi7597'; // <-- replace this with your password
+let ownerUnlocked = false;
+function ownerGate() {
+  if (ownerUnlocked) return faceChatPage();
+  app.innerHTML = `<div style="max-width:320px;margin:60px auto;text-align:center">
+    <h2>🔒 Owner Only</h2>
+    <p class="dim">This area is restricted. Enter the password to continue.</p>
+    <input id="opw" type="password" placeholder="Password" style="width:100%;margin-bottom:10px">
+    <button id="ogo">Enter</button>
+    <p id="omsg" class="err" style="margin-top:10px"></p>
+  </div>`;
+  const go = () => {
+    if (document.getElementById('opw').value === OWNER_KEY) {
+      ownerUnlocked = true; faceChatPage();
+    } else {
+      document.getElementById('omsg').textContent = 'Wrong password.';
+      document.getElementById('opw').value = '';
+      document.getElementById('opw').focus();
+    }
+  };
+  document.getElementById('ogo').onclick = go;
+  document.getElementById('opw').onkeydown = e => { if (e.key === 'Enter') go(); };
+}
+
 /* ---------- FaceChat: a viewer shares cam + mic with the streamer and you talk both ways ---------- */
 // viewer side
 function faceChatViewer(ch, hostId, name) {
@@ -910,7 +935,7 @@ async function callPage(room, role) {
 
 /* Lobby: who is live right now (streamers send a heartbeat; a stream counts as live for 45 seconds after the last one) */
 function livePage() {
-  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button> <button id="fcgo" style="background:linear-gradient(90deg,#4ade80,#22c3e6)">📹 FaceChat</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
+  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button> <button id="fcgo" style="background:linear-gradient(90deg,#4ade80,#22c3e6)">🔒 Owner Only</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
   document.getElementById('golive').onclick = () => { location.hash = '#/golive'; };
   document.getElementById('fcgo').onclick = () => { location.hash = '#/facechat'; };
   async function draw() {
