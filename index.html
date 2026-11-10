@@ -247,11 +247,13 @@ async function loadTab(tab) {
       const ab = e.target.closest('[data-approve]'), db = e.target.closest('[data-deny]');
       if (ab) {
         ab.disabled = true;
-        // create the account using Supabase admin signup
-        const { error } = await sb.auth.signUp({ email: ab.dataset.email, password: '', options: { data: {} } });
-        // mark approved
-        await sb.from('access_requests').update({ status: 'approved' }).eq('id', ab.dataset.approve);
-        ab.closest('div[style]').innerHTML = `<span class="dim">✅ Approved — ${esc(ab.dataset.email)}</span>`;
+        const { data: res, error } = await sb.rpc('approve_access_request', { p_request_id: ab.dataset.approve });
+        if (error || !res?.ok) {
+          ab.disabled = false;
+          document.getElementById('atab').insertAdjacentHTML('afterbegin', `<p class="err">${esc(error?.message || res?.reason || 'Could not approve.')}</p>`);
+          return;
+        }
+        ab.closest('div[style]').innerHTML = `<span class="dim">✅ Approved — ${esc(ab.dataset.email)}${res.existed ? ' (account already existed)' : ''}</span>`;
       }
       if (db) {
         db.disabled = true;
