@@ -74,6 +74,7 @@
   <a href="#/facechat" class="mem">🔒 Owner Only</a>
   <a href="#/record" class="mem">Record / Upload</a>
   <span style="flex:1"></span>
+  <a href="#/admin" id="admbtn" title="Admin" style="width:18px;height:18px;background:#111;border-radius:3px;display:inline-block;flex:none;margin-right:4px"></a>
   <a href="#/settings" id="me" title="Settings" style="display:none;align-items:center;gap:6px"><span id="meav"></span>⚙</a>
   <span id="who" class="dim"></span>
   <span class="dim" style="font-size:11px">beta 2.0</span>
@@ -106,6 +107,10 @@ async function route() {
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
   if (ownerSession && parts[0] !== 'facechat') { ownerSession = false; ownerUnlocked = false; }
+  if (parts[0] === 'admin') return adminGate();
+  if (parts[0] === 'request') return requestPage();
+  // ban check
+  if (user && parts[0] !== 'login') { const { data: ban } = await sb.rpc('is_banned'); if (ban) return bannedPage(); }
   if (parts[0] === 'facechat') return ownerGateCheck(parts[1]);
   if (parts[0] === 'fcredeem') return redeemInvitePage(parts.slice(1).join('/'));
   if (parts[0] === 'call') return callPage(parts[1], parts[2]);
@@ -123,21 +128,168 @@ document.getElementById('out').onclick = () => signOutNow();
 
 /* ---------- Login ---------- */
 function loginPage() {
-  app.innerHTML = `<div style="max-width:320px;margin:60px auto"><h2>Sign in</h2>
+  app.innerHTML = `<div style="max-width:360px;margin:60px auto">
+    <h2 style="text-align:center;margin-bottom:20px">Sign in to ZTube</h2>
     <input id="em" placeholder="Email" style="width:100%;box-sizing:border-box">
-    <input id="pw" type="password" placeholder="Password (6+ characters)" style="width:100%;box-sizing:border-box">
-    <button id="in">Sign in</button> <button id="up">Create account</button><p id="msg" class="err"></p></div>`;
+    <input id="pw" type="password" placeholder="Password" style="width:100%;box-sizing:border-box">
+    <button id="in" style="width:100%;margin-bottom:10px">Sign in</button>
+    <p style="text-align:center;margin:0"><a href="#/request" style="color:var(--p2);font-size:14px">Don't have an account? Request access</a></p>
+    <p id="msg" class="err"></p>
+  </div>`;
   const msg = document.getElementById('msg');
-  async function go(mode) {
+  document.getElementById('in').onclick = async () => {
     msg.textContent = '';
-    const creds = { email: document.getElementById('em').value.trim(), password: document.getElementById('pw').value };
-    const { data, error } = mode === 'in' ? await sb.auth.signInWithPassword(creds) : await sb.auth.signUp(creds);
+    const { error } = await sb.auth.signInWithPassword({
+      email: document.getElementById('em').value.trim(),
+      password: document.getElementById('pw').value
+    });
     if (error) return msg.textContent = error.message;
-    if (mode === 'up' && !data.session) return msg.textContent = 'Account created. Check your email to confirm, then sign in.';
     location.hash = '#/';
+  };
+  document.getElementById('em').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('in').click(); });
+  document.getElementById('pw').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('in').click(); });
+}
+
+/* ---------- Request access page ---------- */
+function requestPage() {
+  app.innerHTML = `<div style="max-width:380px;margin:60px auto">
+    <h2 style="text-align:center;margin-bottom:6px">Request access</h2>
+    <p class="dim" style="text-align:center;margin-bottom:20px">Fill in your details. The owner will review your request.</p>
+    <input id="rn" placeholder="Your name" style="width:100%;box-sizing:border-box">
+    <input id="re" type="email" placeholder="Email" style="width:100%;box-sizing:border-box">
+    <input id="rp" type="password" placeholder="Choose a password (6+ characters)" style="width:100%;box-sizing:border-box">
+    <input id="rp2" type="password" placeholder="Confirm password" style="width:100%;box-sizing:border-box">
+    <button id="rsend" style="width:100%;margin-bottom:10px">Send request</button>
+    <p style="text-align:center;margin:0"><a href="#/login" style="color:var(--p2);font-size:14px">Already have an account? Sign in</a></p>
+    <p id="msg" class="err"></p>
+  </div>`;
+  const $ = id => document.getElementById(id);
+  $('rsend').onclick = async () => {
+    $('msg').textContent = ''; $('msg').className = 'err';
+    const name = $('rn').value.trim(), email = $('re').value.trim(),
+          pw = $('rp').value, pw2 = $('rp2').value;
+    if (!name) return $('msg').textContent = 'Enter your name.';
+    if (!email) return $('msg').textContent = 'Enter your email.';
+    if (pw.length < 6) return $('msg').textContent = 'Password must be at least 6 characters.';
+    if (pw !== pw2) return $('msg').textContent = "Passwords don't match.";
+    $('rsend').disabled = true; $('msg').className = 'dim'; $('msg').textContent = 'Sending...';
+    const { error } = await sb.rpc('submit_access_request', { p_name: name, p_email: email, p_pw: pw });
+    $('rsend').disabled = false;
+    if (error) { $('msg').className = 'err'; return $('msg').textContent = error.message; }
+    $('msg').className = 'dim';
+    app.innerHTML = `<div style="max-width:380px;margin:60px auto;text-align:center">
+      <div style="font-size:48px;margin-bottom:16px">✅</div>
+      <h2>Request sent!</h2>
+      <p class="dim">The owner will review your request. If approved, you can sign in with the email and password you chose.</p>
+      <a href="#/login"><button style="margin-top:16px">Back to sign in</button></a>
+    </div>`;
+  };
+}
+
+/* ---------- Banned page ---------- */
+function bannedPage() {
+  sb.auth.signOut();
+  app.innerHTML = `<div style="max-width:360px;margin:60px auto;text-align:center">
+    <div style="font-size:48px;margin-bottom:16px">🚫</div>
+    <h2>Account banned</h2>
+    <p class="dim">Your account has been banned from ZTube. If you think this is a mistake, contact the owner.</p>
+  </div>`;
+}
+
+/* ---------- Admin panel ---------- */
+const ADMIN_KEY = 'ENTER_YOUR_ADMIN_PASSWORD_HERE'; // <-- set your admin password
+let adminUnlocked = false;
+
+function adminGate() {
+  if (adminUnlocked) return adminPage();
+  app.innerHTML = `<div style="max-width:320px;margin:60px auto;text-align:center">
+    <h2>⚙ Admin Panel</h2>
+    <p class="dim">Owner access only.</p>
+    <input id="apw" type="password" placeholder="Admin password" style="width:100%;margin-bottom:10px">
+    <button id="ago">Enter</button>
+    <p id="amsg" class="err"></p>
+  </div>`;
+  const inp = document.getElementById('apw'), btn = document.getElementById('ago');
+  const go = () => {
+    if (inp.value === ADMIN_KEY) { adminUnlocked = true; adminPage(); }
+    else { document.getElementById('amsg').textContent = 'Wrong password.'; inp.value = ''; inp.focus(); }
+  };
+  btn.addEventListener('click', go);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+}
+
+async function adminPage() {
+  app.innerHTML = `<h2>⚙ Admin Panel</h2>
+    <div style="display:flex;gap:12px;margin-bottom:20px flex-wrap:wrap">
+      <button class="chip on" data-tab="requests">📋 Requests</button>
+      <button class="chip" data-tab="members">👥 Members</button>
+    </div>
+    <div id="atab"></div>`;
+  const tabs = app.querySelectorAll('[data-tab]');
+  tabs.forEach(b => b.onclick = () => { tabs.forEach(x => x.classList.toggle('on', x === b)); loadTab(b.dataset.tab); });
+  loadTab('requests');
+}
+
+async function loadTab(tab) {
+  const box = document.getElementById('atab'); if (!box) return;
+  box.innerHTML = '<p class="dim">Loading...</p>';
+  if (tab === 'requests') {
+    const { data, error } = await sb.from('access_requests').select('*').eq('status', 'pending').order('created_at');
+    if (error) return box.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+    if (!data.length) return box.innerHTML = '<p class="dim">No pending requests.</p>';
+    box.innerHTML = data.map(r => `
+      <div style="background:#fff;border-radius:16px;padding:16px;margin:10px 0;box-shadow:0 4px 14px #7873f51f;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="flex:1"><b>${esc(r.name)}</b><br><span class="dim">${esc(r.email)}</span><br><span class="dim" style="font-size:12px">${new Date(r.created_at).toLocaleString()}</span></div>
+        <button data-approve="${esc(r.id)}" data-email="${esc(r.email)}" data-pw="${esc(r.pw_encrypted)}">✅ Approve</button>
+        <button data-deny="${esc(r.id)}" style="background:#e11d48">❌ Deny</button>
+      </div>`).join('');
+    box.addEventListener('click', async e => {
+      const ab = e.target.closest('[data-approve]'), db = e.target.closest('[data-deny]');
+      if (ab) {
+        ab.disabled = true;
+        // create the account using Supabase admin signup
+        const { error } = await sb.auth.signUp({ email: ab.dataset.email, password: '', options: { data: {} } });
+        // mark approved
+        await sb.from('access_requests').update({ status: 'approved' }).eq('id', ab.dataset.approve);
+        ab.closest('div[style]').innerHTML = `<span class="dim">✅ Approved — ${esc(ab.dataset.email)}</span>`;
+      }
+      if (db) {
+        db.disabled = true;
+        await sb.from('access_requests').update({ status: 'denied' }).eq('id', db.dataset.deny);
+        db.closest('div[style]').remove();
+      }
+    });
+  } else {
+    const { data, error } = await sb.from('channels').select('*').order('video_count', { ascending: false });
+    if (error) return box.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+    const { data: bans } = await sb.from('banned_users').select('user_id');
+    const bannedIds = new Set((bans || []).map(b => b.user_id));
+    box.innerHTML = data.map(m => `
+      <div style="background:#fff;border-radius:16px;padding:14px 16px;margin:10px 0;box-shadow:0 4px 14px #7873f51f;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        ${avHtml(m.avatar_path, m.display_name || m.username, 42)}
+        <div style="flex:1"><b>${esc(m.display_name || m.username)}</b> <span class="dim">@${esc(m.username)}</span><br>
+          <span class="dim">${m.video_count} videos · ${m.subscriber_count} subscribers ${bannedIds.has(m.id) ? '· <span style="color:#e11d48">BANNED</span>' : ''}</span></div>
+        ${m.id !== user.id ? `
+          ${bannedIds.has(m.id)
+            ? `<button data-unban="${esc(m.id)}" style="background:#16a34a">🔓 Unban</button>`
+            : `<button data-ban="${esc(m.id)}" style="background:#f97316">🚫 Ban</button>`}
+          <button data-deluser="${esc(m.id)}" style="background:#e11d48">🗑 Delete</button>` : '<span class="dim">You</span>'}
+      </div>`).join('');
+    box.addEventListener('click', async e => {
+      const bb = e.target.closest('[data-ban]'), ub = e.target.closest('[data-unban]'), del = e.target.closest('[data-deluser]');
+      if (bb) {
+        if (!confirm(`Ban ${bb.dataset.ban}? They will be signed out and blocked.`)) return;
+        await sb.from('banned_users').insert({ user_id: bb.dataset.ban });
+        loadTab('members');
+      }
+      if (ub) { await sb.from('banned_users').delete().eq('user_id', ub.dataset.unban); loadTab('members'); }
+      if (del) {
+        if (!confirm('Delete this account permanently? This cannot be undone.')) return;
+        await sb.from('profiles').delete().eq('id', del.dataset.deluser);
+        loadTab('members');
+      }
+    });
   }
-  document.getElementById('in').onclick = () => go('in');
-  document.getElementById('up').onclick = () => go('up');
 }
 
 
@@ -638,7 +790,7 @@ function wireChat(ch, name) {
 }
 
 /* ---------- Owner Only gate ---------- */
-const OWNER_KEY = 'Nhsi7597'; // <-- replace with your password
+const OWNER_KEY = 'ENTER_YOUR_PASSWORD_HERE'; // <-- replace with your password
 const OWNER_SITE_URL = location.origin + location.pathname;
 let ownerUnlocked = false, ownerSession = false;
 
@@ -843,6 +995,14 @@ setInterval(beat, 20000);
 // everyone listens on their own inbox so invites pop up on any page
 let inbox = null, inboxFor = null;
 function ensureInbox() {
+  sb.channel('fc-invite-' + user.id)
+    .on('broadcast', { event: 'fc-invite' }, ({ payload }) => {
+      const nm = esc(payload.from || 'Someone');
+      const accept = confirm(`🔒 ${nm} invited you to Owner Only.\n\n${payload.permanent ? 'This will unlock it for you forever.' : 'This is a one-time session invite.'}\n\nOpen it now?`);
+      if (accept) location.hash = payload.link.split('#')[1] || '/facechat';
+    })
+    .subscribe();
+
   if (inbox && inboxFor === user.id) return;
   if (inbox) sb.removeChannel(inbox);
   inboxFor = user.id;
@@ -909,6 +1069,15 @@ async function faceChatPage() {
     const { data } = await sb.from('online_now').select('*').neq('id', user.id);
     online = data || []; onlineIds = new Set(online.map(p => p.id));
     draw();
+    // rebuild invite dropdown with live online list
+    const box = document.getElementById('invbox');
+    if (box) {
+      const perm = document.getElementById('invperm')?.checked;
+      box.outerHTML = inviteUI(online);
+      if (perm) { const el = document.getElementById('invperm'); if (el) el.checked = true; }
+      const sb2 = document.getElementById('invsend');
+      if (sb2) sb2.onclick = () => sendInvite(online);
+    }
   };
   $('people').onclick = e => { const b = e.target.closest('[data-inv]'); if (b) startCall(b.dataset.inv); };
   $('fcq').oninput = draw;
