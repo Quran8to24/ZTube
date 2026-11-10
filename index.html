@@ -103,12 +103,12 @@ async function route() {
   const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
   app.className = '';
   if (parts[0] === 'login') return loginPage();
+  if (parts[0] === 'request') return requestPage();
   if (!user) { location.hash = '#/login'; return; }
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
   if (ownerSession && parts[0] !== 'facechat') { ownerSession = false; ownerUnlocked = false; }
   if (parts[0] === 'admin') return adminGate();
-  if (parts[0] === 'request') return requestPage();
   // ban check
   if (user && parts[0] !== 'login') { const { data: ban } = await sb.rpc('is_banned'); if (ban) return bannedPage(); }
   if (parts[0] === 'facechat') return ownerGateCheck(parts[1]);
