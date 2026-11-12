@@ -43,6 +43,17 @@
   .hl{background:linear-gradient(90deg,#ffd200,#ff9a44);color:#3b2300;padding:10px 14px;border-radius:14px;font-weight:600;
       box-shadow:0 6px 20px #0006;animation:pop .35s ease-out}
   @keyframes pop{from{transform:scale(.8) translateY(14px);opacity:0}to{transform:none;opacity:1}}
+  .wscreen{position:fixed;inset:0;z-index:999;background:linear-gradient(160deg,#fff1f8,#eef2ff,#e6fbff);display:flex;flex-direction:column;align-items:center;overflow:hidden}
+  .wscroll{flex:1;overflow-y:auto;width:100%;max-width:720px;padding:48px 32px 24px;box-sizing:border-box}
+  .wscroll h1{background:linear-gradient(90deg,#ff6ec4,#7873f5);-webkit-background-clip:text;background-clip:text;color:transparent;font-size:28px;margin:0 0 6px}
+  .wscroll h2{color:#2d2a4a;font-size:18px;margin:28px 0 8px}
+  .wscroll p{color:#444;line-height:1.85;margin:0 0 14px;font-size:15px}
+  .wscroll ul{color:#444;line-height:1.85;margin:0 0 14px;padding-left:22px;font-size:15px}
+  .wscroll li{margin-bottom:6px}
+  .wfoot{width:100%;max-width:720px;padding:16px 32px 32px;box-sizing:border-box;background:linear-gradient(to bottom,transparent,#eef2ff 30%)}
+  .wbtn{width:100%;padding:16px;font-size:18px;font-weight:700;letter-spacing:.5px;border-radius:999px;cursor:not-allowed;opacity:.4;background:linear-gradient(90deg,#ff6ec4,#7873f5);color:#fff;border:0;transition:opacity .3s}
+  .wbtn.ready{opacity:1;cursor:pointer}
+  .wscrolltip{text-align:center;font-size:13px;color:#6b6890;margin-bottom:10px}
   textarea{border:2px solid #e3e1fb;border-radius:12px;padding:10px 14px;font:15px 'Poppins',system-ui,sans-serif;background:#fff;color:var(--ink);outline:none;width:100%;max-width:420px}
   textarea:focus{border-color:var(--p2)}
   .av{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;color:#fff;font-weight:700;flex:none;overflow:hidden;background-size:cover;background-position:center}
@@ -986,6 +997,103 @@ function faceChatHost(ch, myId) {
 }
 
 /* ---------- FaceChat page: see who is online, invite them, talk face to face ---------- */
+function showWallah() {
+  const div = document.createElement('div');
+  div.className = 'wscreen'; div.id = 'wscreen';
+  div.innerHTML = `
+    <div class="wscroll" id="wscroll">
+      <p style="font-size:12px;color:#6b6890;text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">ZTube Community Guidelines</p>
+      <h1>▶ ZTube Community Agreement</h1>
+      <p style="color:#6b6890;font-size:14px;margin-bottom:28px">Read carefully and scroll to the bottom to agree. This is a <strong>Wallah Agreement</strong> — your word binds you to these rules.</p>
+
+      <h2>1. Who We Are</h2>
+      <p>ZTube is a private, invite-only video platform built for a trusted community. Because membership is a privilege and not a right, every person on this platform carries a shared responsibility to keep it safe, respectful, and welcoming. These guidelines exist not to restrict your freedom but to protect every member's right to participate without fear, harassment, or harm. By using ZTube, you agree to hold yourself to a higher standard than what the internet typically demands.</p>
+
+      <h2>2. Zero Tolerance: Cyberbullying & Harassment</h2>
+      <p>ZTube has an absolute zero-tolerance policy for cyberbullying and harassment in any form. This includes but is not limited to:</p>
+      <ul>
+        <li>Sending repeated unwanted messages, comments, or notifications intended to distress, intimidate, or overwhelm another user.</li>
+        <li>Targeting a person's appearance, voice, religion, ethnicity, gender, or any personal characteristic in a demeaning or mocking way.</li>
+        <li>Encouraging others to attack, pile on, or report a specific user with the intent to harm their experience on the platform.</li>
+        <li>Posting, sharing, or commenting content designed to publicly humiliate, embarrass, or degrade another member.</li>
+      </ul>
+      <p>If you witness harassment, do not participate. Report it immediately. Silence in the face of harassment makes you complicit. The owner reserves the right to remove any content and ban any account involved without prior warning.</p>
+
+      <h2>3. Zero Tolerance: Intimidation & Threats</h2>
+      <p>No form of intimidation will be tolerated on ZTube. This covers direct threats, implied threats, and content that could reasonably be interpreted as threatening toward any individual or group. You may not:</p>
+      <ul>
+        <li>Threaten physical harm, property damage, or any other form of retaliation against a user, whether publicly or in private messages.</li>
+        <li>Use language designed to make another user fear for their personal safety.</li>
+        <li>Coordinate with others to intimidate, silence, or exclude a user from participating on ZTube.</li>
+        <li>Use your status, subscriber count, or influence on the platform to pressure or coerce other members.</li>
+      </ul>
+      <p>Threats are taken seriously regardless of whether they were "meant as a joke." Intent does not eliminate impact, and ZTube will act on the effect your words have on others.</p>
+
+      <h2>4. Zero Tolerance: Vulgar & Offensive Language</h2>
+      <p>ZTube is a space that values respectful communication. The use of excessive vulgar, profane, or deliberately offensive language in comments, video titles, descriptions, usernames, or live chats is prohibited. This applies to:</p>
+      <ul>
+        <li>Slurs of any kind, including racial, ethnic, religious, gendered, or ability-based slurs.</li>
+        <li>Language that sexualizes, degrades, or dehumanizes any person or group.</li>
+        <li>Gratuitous profanity used to insult, belittle, or provoke other users.</li>
+        <li>Coded or disguised language that is widely understood to carry hateful or offensive meaning.</li>
+      </ul>
+      <p>Casual conversation and self-expression are welcome on ZTube. The line is crossed when language is used as a weapon against another person or community. Use your words to build, not to tear down.</p>
+
+      <h2>5. Zero Tolerance: Doxxing & Privacy Violations</h2>
+      <p>Every member of ZTube has a right to privacy. Doxxing — the act of researching and publicly sharing private or personal information about someone without their consent — is strictly forbidden and may constitute a criminal offense in many jurisdictions. You may not:</p>
+      <ul>
+        <li>Share, post, or transmit another person's real name, home address, phone number, school, workplace, or any identifying information they have not voluntarily made public on ZTube.</li>
+        <li>Share screenshots, recordings, or any content from private conversations without the explicit consent of all parties involved.</li>
+        <li>Attempt to identify, locate, or unmask the real-world identity of a user who has chosen to remain anonymous.</li>
+        <li>Use information gathered on ZTube to contact, track, or surveil another user outside of this platform.</li>
+      </ul>
+      <p>Violations of this rule will result in immediate and permanent account deletion, without appeal. ZTube may also refer serious cases to appropriate authorities.</p>
+
+      <h2>6. Zero Tolerance: Explicit & Unsafe Material</h2>
+      <p>ZTube prohibits the upload, sharing, or promotion of explicit, graphic, or unsafe content of any kind. This includes:</p>
+      <ul>
+        <li>Sexually explicit or suggestive content, including but not limited to nudity, pornography, or any content that sexualizes minors in any way.</li>
+        <li>Graphic violence, gore, or footage intended to shock, disturb, or traumatize viewers.</li>
+        <li>Content that promotes, glorifies, or provides instructions for self-harm, suicide, eating disorders, or substance abuse.</li>
+        <li>Videos, images, or audio that promote dangerous activities, illegal acts, or the harm of any living being.</li>
+        <li>Misinformation or content designed to deceive users in a way that could cause real-world harm.</li>
+      </ul>
+      <p>Content uploaded to ZTube is reviewed by the owner and may be removed at any time. Uploading prohibited material is grounds for immediate and permanent removal from the platform.</p>
+
+      <h2>7. Live Streams & FaceChat</h2>
+      <p>All rules above apply equally to live streams and FaceChat sessions. Because live content is real-time and harder to moderate, members are held to an even higher standard of conduct during live interactions. The owner may end any stream or FaceChat session at any time if these guidelines are being violated.</p>
+
+      <h2>8. Consequences</h2>
+      <p>ZTube operates on a simple principle: one serious violation is enough. There are no three-strike systems for hate speech, threats, doxxing, or explicit content. The consequences for violations range from content removal and temporary suspension to permanent account deletion, depending on the severity of the offense. The owner's decision is final.</p>
+
+      <h2>9. The Wallah Agreement</h2>
+      <p>By scrolling to the bottom of this page and pressing <strong>"Wallah"</strong>, you are making a sincere, binding promise — on your word — that you have read, understood, and will uphold every rule in this agreement. The word <em>Wallah</em> (والله) means "by God" and carries the weight of a solemn oath. This is not a checkbox. This is your word. Honor it.</p>
+      <p>If you do not agree with these guidelines, do not press the button. Close this page and do not use ZTube.</p>
+
+      <p style="margin-top:32px;font-size:13px;color:#6b6890;text-align:center">ZTube Community Guidelines · Last updated November 2026</p>
+    </div>
+    <div class="wfoot">
+      <p class="wscrolltip" id="wtip">📜 Scroll to the bottom to agree</p>
+      <button class="wbtn" id="wbtn" disabled onclick="agreeWallah()">Wallah</button>
+    </div>`;
+  document.body.appendChild(div);
+  const scroll = div.querySelector('#wscroll');
+  scroll.addEventListener('scroll', () => {
+    const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
+    const btn = document.getElementById('wbtn');
+    const tip = document.getElementById('wtip');
+    if (atBottom) {
+      btn.classList.add('ready'); btn.disabled = false;
+      tip.textContent = '✅ You have read the guidelines. Press Wallah to agree.';
+    }
+  });
+}
+function agreeWallah() {
+  sessionStorage.setItem('wallah_agreed', '1');
+  const el = document.getElementById('wscreen');
+  if (el) el.remove();
+}
+
 async function signOutNow() {
   if (user) await sb.from('online_users').delete().eq('user_id', user.id);
   await sb.auth.signOut();
@@ -1434,6 +1542,7 @@ async function boot() {
     { auth: { storage: window.sessionStorage, storageKey: 'ztube-auth-' + id } }
   );
   sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT') { myProfile = null; location.hash = '#/login'; } });
+  if (!sessionStorage.getItem('wallah_agreed')) showWallah();
   new MutationObserver(() => fillAvatars()).observe(document.body, { childList: true, subtree: true });
   if (document.getElementById('invsend')) document.getElementById('invsend').onclick = sendInvite;
   document.getElementById('q').addEventListener('keydown', e => {
@@ -1450,6 +1559,5 @@ async function updateLiveDot() {
 setInterval(updateLiveDot, 8000);
 boot().then(() => { route(); setTimeout(updateLiveDot, 1500); });
 </script>
-<script>(function(){var pp=document.createElement('script'), ppr=document.getElementsByTagName('script')[0]; stid='YVpRWVZ2YndMMTJ4MkpyRmFjQUVDdz09';pp.type='text/javascript'; pp.async=true; pp.src=('https:' == document.location.protocol ? 'https://' : 'http://') + 's01.live2support.com/dashboardv2/chatwindow/'; ppr.parentNode.insertBefore(pp, ppr);})();</script>
 </body>
 </html>
