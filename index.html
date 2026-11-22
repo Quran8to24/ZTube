@@ -82,7 +82,7 @@
   <input id="q" class="mem" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
   <a href="#/shorts" class="mem">Shorts</a>
   <a href="#/live" id="livelink" class="mem">🔴 Live</a>
-  <a href="#/zchat" class="mem">📹 ZChat</a>
+  <a href="#/zchat">📹 ZChat</a>
   <a href="#/record" class="mem">Record / Upload</a>
   <span style="flex:1"></span>
   <a href="#/admin" id="admbtn" title="Admin" style="width:18px;height:18px;background:#111;border-radius:3px;display:inline-block;flex:none;margin-right:4px"></a>
@@ -115,14 +115,14 @@ async function route() {
   app.className = '';
   if (parts[0] === 'login') return loginPage();
   if (parts[0] === 'request') return requestPage();
+  if (parts[0] === 'zchat') return zChatPage(parts[1]);
+  if (parts[0] === 'call') return callPage(parts[1], parts[2]);
   if (!user) { location.hash = '#/login'; return; }
   app.className = parts[0] === 'shorts' ? 'full' : '';
   if (parts[0] === 'shorts') return shortsPage();
   if (parts[0] === 'admin') return adminGate();
   // ban check
   if (user && parts[0] !== 'login') { const { data: ban } = await sb.rpc('is_banned'); if (ban) return bannedPage(); }
-  if (parts[0] === 'zchat') return zChatPage(parts[1]);
-  if (parts[0] === 'call') return callPage(parts[1], parts[2]);
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
   if (parts[0] === 'live') return parts[1] ? watchLivePage(parts[1]) : livePage();
@@ -1308,7 +1308,8 @@ async function boot() {
     { auth: { storage: window.sessionStorage, storageKey: 'ztube-auth-' + id } }
   );
   sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT') { myProfile = null; location.hash = '#/login'; } });
-  if (!sessionStorage.getItem('wallah_agreed')) showWallah();
+  const publicHash = (location.hash || '').startsWith('#/zchat') || (location.hash || '').startsWith('#/call');
+  if (!sessionStorage.getItem('wallah_agreed') && !publicHash) showWallah();
   new MutationObserver(() => fillAvatars()).observe(document.body, { childList: true, subtree: true });
   if (document.getElementById('invsend')) document.getElementById('invsend').onclick = sendInvite;
   document.getElementById('q').addEventListener('keydown', e => {
