@@ -82,7 +82,7 @@
   <input id="q" class="mem" placeholder="🔍 Search" style="width:190px;margin:0;padding:7px 14px;border-radius:999px">
   <a href="#/shorts" class="mem">Shorts</a>
   <a href="#/live" id="livelink" class="mem">🔴 Live</a>
-  
+  <a href="#/zchat" class="mem">📹 ZChat</a>
   <a href="#/record" class="mem">Record / Upload</a>
   <span style="flex:1"></span>
   <a href="#/admin" id="admbtn" title="Admin" style="width:18px;height:18px;background:#111;border-radius:3px;display:inline-block;flex:none;margin-right:4px"></a>
@@ -207,7 +207,7 @@ function bannedPage() {
 }
 
 /* ---------- Admin panel ---------- */
-const ADMIN_KEY = 'Nhsi7597'; // <-- set your admin password
+const ADMIN_KEY = 'Nhsi7597';
 let adminUnlocked = false;
 
 function adminGate() {
@@ -219,13 +219,25 @@ function adminGate() {
     <button id="ago">Enter</button>
     <p id="amsg" class="err"></p>
   </div>`;
-  const inp = document.getElementById('apw'), btn = document.getElementById('ago');
-  const go = () => {
-    if (inp.value === ADMIN_KEY) { adminUnlocked = true; adminPage(); }
-    else { document.getElementById('amsg').textContent = 'Wrong password.'; inp.value = ''; inp.focus(); }
+  const inp = document.getElementById('apw');
+  const enter = () => {
+    if (inp.value === ADMIN_KEY) {
+      adminUnlocked = true;
+      adminPage();
+    } else {
+      document.getElementById('amsg').textContent = 'Wrong password.';
+      inp.value = '';
+      inp.focus();
+    }
   };
-  btn.addEventListener('click', go);
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+  document.getElementById('ago').addEventListener('click', enter);
+  inp.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      enter();
+    }
+  });
+  inp.focus();
 }
 
 async function adminPage() {
@@ -307,6 +319,54 @@ async function loadTab(tab) {
 
 /* ---------- Shared helpers ---------- */
 function onLeave(fn) { const prev = cleanup; cleanup = () => { prev(); fn(); }; }
+async function signOutNow() {
+  if (user) await sb.from('online_users').delete().eq('user_id', user.id);
+  await sb.auth.signOut();
+  myProfile = null;
+  location.hash = '#/login';
+}
+async function beat() {
+  if (user) await sb.from('online_users').upsert({ user_id: user.id });
+}
+setInterval(beat, 20000);
+
+let inbox = null, inboxFor = null;
+function ensureInbox() {
+  if (!user || (inbox && inboxFor === user.id)) return;
+  if (inbox) sb.removeChannel(inbox);
+  inboxFor = user.id;
+  inbox = sb.channel('inbox-' + user.id, { config: { broadcast: { self: false } } })
+    .on('broadcast', { event: 'fc-invite' }, ({ payload }) => showInvite(payload))
+    .on('broadcast', { event: 'fc-declined' }, ({ payload }) => window.dispatchEvent(new CustomEvent('fc-declined', { detail: payload })))
+    .subscribe();
+}
+function sendToInbox(targetId, event, payload) {
+  const c = sb.channel('inbox-' + targetId, { config: { broadcast: { self: false } } });
+  c.subscribe(state => {
+    if (state !== 'SUBSCRIBED') return;
+    c.send({ type: 'broadcast', event, payload });
+    setTimeout(() => sb.removeChannel(c), 1500);
+  });
+}
+function showInvite(p) {
+  document.getElementById('invite')?.remove();
+  const el = document.createElement('div');
+  el.id = 'invite';
+  el.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:50;background:#fff;color:#2d2a4a;padding:16px 18px;border-radius:16px;box-shadow:0 10px 30px #7873f566;max-width:300px';
+  el.innerHTML = `📹 <b>${esc(p.name)}</b> is inviting you to a ZChat call<br><br><button id="inyes">Accept</button> <button id="inno" style="background:#6b6890">Decline</button>`;
+  document.body.appendChild(el);
+  const tm = setTimeout(() => el.remove(), 30000);
+  el.querySelector('#inyes').onclick = () => { clearTimeout(tm); el.remove(); location.hash = `#/call/${p.room}/b`; };
+  el.querySelector('#inno').onclick = () => { clearTimeout(tm); el.remove(); sendToInbox(p.from, 'fc-declined', { room: p.room }); };
+}
+
+async function faceChatPage() {
+  app.innerHTML = `<h2>📹 ZChat</h2><p class="dim">Start a private ZChat call or join one with a meeting ID.</p><a href="#/zchat"><button>Open ZChat</button></a>`;
+}
+async function callPage(room, role) {
+  zChatJoin(room, myProfile?.display_name || myProfile?.username || '', role === 'a');
+}
+
 const hue = id => parseInt(id.slice(0, 4), 16) % 360;
 function liveCardsHtml(items) {
   return '<div class="grid">' + items.map(i => `
@@ -719,6 +779,67 @@ async function shortsPage() {
   cleanup = () => io.disconnect();
 }
 
+/* ---------- Livestream ---------- */
+function livePage() {
+  app.innerHTML = `<h2>🔴 Live</h2><button id="golive">Go live</button><div id="lives" style="margin-top:18px"><p class="dim">Looking for live streams...</p></div>`;
+  document.getElementById('golive').onclick = () => { location.hash = '#/golive'; };
+  const draw = async () => {
+    const { data, error } = await sb.from('live_now').select('*');
+    const box = document.getElementById('lives');
+    if (!box) return;
+    if (error) return box.innerHTML = `<p class="err">${esc(error.message)}</p>`;
+    box.innerHTML = data?.length ? '<div class="grid">' + data.map(i => `
+      <a class="card" href="#/live/${esc(i.host_id)}">
+        <div class="thumb" style="background:linear-gradient(135deg,#ff416c,#ff4b2b)">🔴</div>
+        <div class="body"><div style="font-weight:600">${esc(i.title)} <span class="tag">LIVE</span></div><div class="dim">${esc(i.name)}</div></div>
+      </a>`).join('') + '</div>' : '<p class="dim">Nobody is live right now.</p>';
+  };
+  draw();
+  const timer = setInterval(draw, 4000);
+  onLeave(() => clearInterval(timer));
+}
+
+async function goLivePage() {
+  app.innerHTML = `<h2>Go live</h2><video id="preview" autoplay muted playsinline></video>
+    <input id="live-title" placeholder="Stream title" style="width:260px">
+    <button id="start-live">Start live</button>
+    <button id="end-live" style="display:none;background:#e11d48">End stream</button>
+    <p id="live-msg" class="err"></p>`;
+  let stream = null;
+  const name = await myName();
+  document.getElementById('start-live').onclick = async () => {
+    const title = document.getElementById('live-title').value.trim() || 'Live stream';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true });
+      document.getElementById('preview').srcObject = stream;
+      document.getElementById('start-live').style.display = 'none';
+      document.getElementById('live-title').style.display = 'none';
+      document.getElementById('end-live').style.display = '';
+      const { error } = await sb.from('live_streams').upsert({ host_id: user.id, title, name });
+      if (error) document.getElementById('live-msg').textContent = 'Could not start: ' + error.message;
+      cleanup = () => {
+        stream?.getTracks().forEach(track => track.stop());
+        sb.from('live_streams').delete().eq('host_id', user.id).then(() => {});
+      };
+      const heartbeat = setInterval(() => sb.from('live_streams').upsert({ host_id: user.id, title, name }), 15000);
+      cleanup = () => { clearInterval(heartbeat); stream?.getTracks().forEach(track => track.stop()); sb.from('live_streams').delete().eq('host_id', user.id).then(() => {}); };
+    } catch (error) {
+      document.getElementById('live-msg').textContent = 'Could not access camera/mic: ' + error.message;
+    }
+  };
+  document.getElementById('end-live').onclick = () => { cleanup(); location.hash = '#/live'; };
+}
+
+async function watchLivePage(hostId) {
+  app.innerHTML = `<h2>🔴 Live stream</h2><p class="dim">Connecting to this broadcaster...</p><p id="live-status" class="err"></p>`;
+  const { data } = await sb.from('live_now').select('*').eq('host_id', hostId).maybeSingle();
+  if (!data) {
+    document.getElementById('live-status').textContent = 'This stream is no longer live.';
+  } else {
+    app.innerHTML = `<h2>${esc(data.title)}</h2><p class="dim">${esc(data.name)}</p><p class="dim">Live video playback requires the broadcaster and viewer to support WebRTC on the same network.</p>`;
+  }
+}
+
 /* ---------- Livestream (free, peer-to-peer: video goes straight from streamer to viewers) ---------- */
 const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
 // ---- Free relay so live video can get through school/strict networks ----
@@ -803,8 +924,6 @@ function wireChat(ch, name) {
 
 /* ---------- Owner Only gate ---------- */
 /* ---------- ZChat: Zoom-style video calls with a meeting ID ---------- */
-const ZCHAT_HOST_KEY = 'Nhsi7597'; // <-- set your ZChat password
-
 function genZChatId() {
   return Array.from({length:9}, () => Math.floor(Math.random()*10)).join('');
 }
@@ -832,9 +951,8 @@ async function zChatPage(roomId) {
     ${isIn ? `
     <div style="background:#fff;border-radius:18px;padding:22px;box-shadow:0 6px 20px #7873f524">
       <h3 style="margin:0 0 6px;color:var(--ink)">Start a call</h3>
-      <p class="dim" style="margin:0 0 14px;font-size:13px">Enter your ZChat password to generate a meeting ID.</p>
-      <input id="hpw" type="password" placeholder="ZChat password" style="width:100%;box-sizing:border-box">
-      <input id="hname" placeholder="Your name" style="width:100%;margin-top:10px;box-sizing:border-box" value="${esc(myProfile?.display_name || myProfile?.username || '')}">
+      <p class="dim" style="margin:0 0 14px;font-size:13px">Generate a private meeting ID for this call.</p>
+      <input id="hname" placeholder="Your name" style="width:100%;box-sizing:border-box" value="${esc(myProfile?.display_name || myProfile?.username || '')}">
       <button id="genbtn" style="width:100%;margin-top:12px">Generate ZChat ID</button>
       <div id="genresult" style="display:none;margin-top:16px;text-align:center">
         <p class="dim">Share this ID with people you want to call:</p>
@@ -860,9 +978,7 @@ async function zChatPage(roomId) {
   if (!isIn) return;
   let genId = null;
   document.getElementById('genbtn').onclick = () => {
-    const pw   = document.getElementById('hpw').value;
     const name = document.getElementById('hname').value.trim();
-    if (pw !== ZCHAT_HOST_KEY) return document.getElementById('genmsg').textContent = 'Wrong password.';
     if (!name) return document.getElementById('genmsg').textContent = 'Enter your name.';
     document.getElementById('genmsg').textContent = '';
     genId = genZChatId();
