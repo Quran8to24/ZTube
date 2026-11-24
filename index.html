@@ -841,7 +841,15 @@ async function sendLiveEvent(channel, event, payload) {
 }
 
 async function goLivePage(streamParam) {
-  const streamId = streamParam || crypto.randomUUID();
+  if (!user) {
+    location.hash = '#/login';
+    return;
+  }
+  // live_streams RLS requires host_id to belong to the authenticated user.
+  const streamId = user.id;
+  if (streamParam && streamParam !== streamId) {
+    history.replaceState(null, '', '#/golive/' + streamId);
+  }
   history.replaceState(null, '', '#/golive/' + streamId);
   app.innerHTML = `<div class="studio-head">
       <div>
