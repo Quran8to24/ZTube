@@ -74,6 +74,31 @@
   .cap a{pointer-events:auto;color:#fff;font-weight:600}
   .snd{position:absolute;z-index:2;right:16px;bottom:26px;width:46px;height:46px;padding:0;font-size:20px;
        background:#ffffff38;backdrop-filter:blur(6px);box-shadow:none}
+  .live-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;align-items:start}
+  .live-main{position:relative;min-width:0}
+  .live-main video{max-width:none;max-height:70vh}
+  .live-chat{min-width:0;height:calc(70vh + 32px);min-height:420px;background:#fff;border-radius:16px;padding:14px;
+              box-shadow:0 6px 20px #7873f524;display:flex;flex-direction:column}
+  .live-chat h3{margin:0 0 8px}
+  .live-chat #chatlog{height:auto;flex:1;min-height:180px;margin-bottom:8px}
+  .live-chat #chattxt{width:calc(100% - 112px);margin:0 6px 8px 0}
+  .live-chat #chatsend{vertical-align:top}
+  .live-chat #chathl{width:42px;padding:10px;margin-left:2px}
+  .live-chat #chat-msg{margin:4px 0 0}
+  .live-chat #hlpanel{margin-top:8px}
+  .studio-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:16px}
+  .studio-status{display:flex;align-items:center;gap:8px;color:#e11d48;font-weight:700}
+  .studio-status::before{content:'';width:10px;height:10px;border-radius:50%;background:#d9dae8}
+  .studio-status.live::before{background:#e11d48;box-shadow:0 0 0 5px #e11d4822}
+  .studio-url{display:flex;align-items:center;gap:8px;max-width:520px}
+  .studio-url input{width:min(360px,60vw);margin:0;font-size:13px}
+  .studio-tabs{display:flex;gap:8px;margin-bottom:14px}
+  .studio-tab{background:#fff;color:var(--ink);box-shadow:0 2px 8px #7873f526}
+  .studio-tab.on{background:linear-gradient(90deg,var(--p1),var(--p2));color:#fff}
+  .studio-metric{background:#fff;border-radius:14px;padding:14px;box-shadow:0 6px 20px #7873f524}
+  .studio-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}
+  .studio-metric b{display:block;font-size:20px}
+  @media (max-width:780px){.live-layout{grid-template-columns:1fr}.live-chat{height:420px}.studio-head{flex-direction:column}.studio-metrics{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -126,7 +151,7 @@ async function route() {
   if (parts[0] === 'record') return recordPage();
   if (parts[0] === 'watch') return watchPage(parts[1]);
   if (parts[0] === 'live') return parts[1] ? watchLivePage(parts[1]) : livePage();
-  if (parts[0] === 'golive') return goLivePage();
+  if (parts[0] === 'golive') return goLivePage(parts[1]);
   if (parts[0] === 'channel') return channelPage(parts[1]);
   if (parts[0] === 'search') return searchPage(decodeURIComponent(parts.slice(1).join('/')));
   if (parts[0] === 'settings') return settingsPage();
@@ -498,8 +523,8 @@ async function channelPage(id) {
   channelBar(document.getElementById('chan'), id, nm, ch.avatar_path, true);
   const drawLive = async () => {
     const el = document.getElementById('chanlive'); if (!el) return;
-    const { data } = await sb.from('live_now').select('*').eq('host_id', id);
-    el.innerHTML = data?.length ? `<a href="#/live/${esc(id)}" style="display:block;background:linear-gradient(90deg,#ff416c,#ff4b2b);color:#fff;padding:12px 16px;border-radius:14px;font-weight:600;text-decoration:none;margin:10px 0">🔴 LIVE NOW: ${esc(data[0].title)} · tap to watch</a>` : '';
+    const { data } = await sb.from('live_now').select('*').eq('name', nm);
+    el.innerHTML = data?.length ? `<a href="#/live/${esc(data[0].host_id)}" style="display:block;background:linear-gradient(90deg,#ff416c,#ff4b2b);color:#fff;padding:12px 16px;border-radius:14px;font-weight:600;text-decoration:none;margin:10px 0">🔴 LIVE NOW: ${esc(data[0].title)} · tap to watch</a>` : '';
   };
   drawLive();
   const liveTimer = setInterval(drawLive, 5000);
@@ -815,23 +840,66 @@ async function sendLiveEvent(channel, event, payload) {
   if (result !== 'ok') throw new Error(`Could not send live ${event} signal (${result}).`);
 }
 
-async function goLivePage() {
-  app.innerHTML = `<h2>Go live</h2>
-    <video id="preview" autoplay muted playsinline></video>
-    <div><input id="live-title" placeholder="Stream title" style="width:260px">
-      <button id="start-live">Start live</button>
-      <button id="toggle-mic" style="display:none"></button>
-      <button id="toggle-camera" style="display:none"></button>
-      <button id="end-live" style="display:none;background:#e11d48">End stream</button>
+async function goLivePage(streamParam) {
+  const streamId = streamParam || crypto.randomUUID();
+  history.replaceState(null, '', '#/golive/' + streamId);
+  app.innerHTML = `<div class="studio-head">
+      <div>
+        <h2 style="margin:0">Live Control Room</h2>
+        <div id="studio-status" class="studio-status">Offline</div>
+      </div>
+      <div class="studio-url">
+        <input id="share-url" readonly>
+        <button id="copy-share">Copy viewer link</button>
+      </div>
     </div>
-    <p id="live-viewers" class="dim"></p>
-    <p id="live-msg" class="err"></p>
-    <div id="pop" class="pop"></div>${chatHtml()}`;
+    <div class="studio-tabs">
+      <button class="studio-tab on" data-studio-tab="overview">Overview</button>
+      <button class="studio-tab" data-studio-tab="chat">Live chat</button>
+    </div>
+    <div class="live-layout">
+      <div class="live-main">
+        <video id="preview" autoplay muted playsinline></video>
+        <div><input id="live-title" placeholder="Stream title" style="width:260px">
+          <button id="start-live">Start live</button>
+          <button id="toggle-mic" style="display:none"></button>
+          <button id="toggle-camera" style="display:none"></button>
+          <button id="end-live" style="display:none;background:#e11d48">End stream</button>
+        </div>
+        <p id="live-viewers" class="dim"></p>
+        <p id="live-msg" class="err"></p>
+        <div id="pop" class="pop"></div>
+        <div class="studio-metrics">
+          <div class="studio-metric"><span class="dim">Status</span><b id="metric-status">Offline</b></div>
+          <div class="studio-metric"><span class="dim">Viewers</span><b id="metric-viewers">0</b></div>
+          <div class="studio-metric"><span class="dim">Stream ID</span><b style="font-size:12px;word-break:break-all">${esc(streamId)}</b></div>
+        </div>
+      </div>
+      <aside class="live-chat">${chatHtml()}</aside>
+    </div>`;
   let stream = null, channel = null, recorder = null, heartbeat = null, replayChunks = [];
   let replayPromise = Promise.resolve(), replayError = null, replaySaved = false;
   let startedAt = 0, ending = false, openReplay = false;
   const peers = new Map();
   const $ = id => document.getElementById(id);
+  const shareUrl = location.origin + location.pathname + '#/live/' + streamId;
+  $('share-url').value = shareUrl;
+  $('copy-share').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      $('copy-share').textContent = 'Copied';
+      setTimeout(() => { $('copy-share').textContent = 'Copy viewer link'; }, 1500);
+    } catch (_) {
+      $('share-url').select();
+    }
+  };
+  document.querySelectorAll('[data-studio-tab]').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('[data-studio-tab]').forEach(item => item.classList.toggle('on', item === tab));
+      const chat = document.querySelector('.live-chat');
+      if (chat) chat.style.display = tab.dataset.studioTab === 'chat' ? 'flex' : '';
+    };
+  });
   const name = await myName();
   const titleInput = $('live-title');
   const title = () => titleInput.value.trim() || 'Live stream';
@@ -844,6 +912,8 @@ async function goLivePage() {
       .filter(presence => presence.role === 'viewer').length;
     const el = $('live-viewers');
     if (el) el.textContent = `${count} viewer${count === 1 ? '' : 's'}`;
+    const metric = $('metric-viewers');
+    if (metric) metric.textContent = String(count);
   };
   const saveReplay = async () => {
     if (!recorder || replaySaved) return;
@@ -897,7 +967,7 @@ async function goLivePage() {
         stream?.getTracks().forEach(track => track.stop());
       }
       replayPending = !!recorder && replayChunks.length > 0 && !replaySaved;
-      const { error } = await sb.from('live_streams').delete().eq('host_id', user.id);
+      const { error } = await sb.from('live_streams').delete().eq('host_id', streamId);
       if (error) stopError ||= error;
       if (activeChannel) {
         const status = await sb.removeChannel(activeChannel);
@@ -945,8 +1015,8 @@ async function goLivePage() {
       stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true });
       $('preview').srcObject = stream;
       const ice = await getIce();
-      channel = sb.channel('live-' + user.id, {
-        config: { broadcast: { self: false }, presence: { key: user.id } }
+      channel = sb.channel('live-' + streamId, {
+        config: { broadcast: { self: false }, presence: { key: streamId } }
       });
       channel
         .on('broadcast', { event: 'viewer-join' }, async ({ payload }) => {
@@ -957,7 +1027,7 @@ async function goLivePage() {
             stream.getTracks().forEach(track => pc.addTrack(track, stream));
             pc.onicecandidate = event => {
               if (event.candidate) sendLiveEvent(channel, 'ice', {
-                to: payload.viewerId, from: user.id, candidate: event.candidate
+                to: payload.viewerId, from: streamId, candidate: event.candidate
               }).catch(showError);
             };
             pc.onconnectionstatechange = () => {
@@ -968,7 +1038,7 @@ async function goLivePage() {
             };
             await pc.setLocalDescription();
             await sendLiveEvent(channel, 'offer', {
-              to: payload.viewerId, from: user.id, description: pc.localDescription
+              to: payload.viewerId, from: streamId, description: pc.localDescription
             });
           } catch (error) {
             showError(error);
@@ -977,7 +1047,7 @@ async function goLivePage() {
           }
         })
         .on('broadcast', { event: 'answer' }, async ({ payload }) => {
-          if (payload?.to !== user.id) return;
+          if (payload?.to !== streamId) return;
           const pc = peers.get(payload.from);
           if (!pc) return;
           try {
@@ -986,7 +1056,7 @@ async function goLivePage() {
           } catch (error) { showError(error); }
         })
         .on('broadcast', { event: 'ice' }, async ({ payload }) => {
-          if (payload?.to !== user.id) return;
+          if (payload?.to !== streamId) return;
           const pc = peers.get(payload.from);
           if (!pc) return;
           try { await addIce(pc, payload.candidate); }
@@ -999,7 +1069,7 @@ async function goLivePage() {
       if (trackStatus !== 'ok') throw new Error(`Could not publish stream presence (${trackStatus}).`);
       startedAt = Date.now();
       const liveTitle = title();
-      const { error } = await sb.from('live_streams').upsert({ host_id: user.id, title: liveTitle, name });
+      const { error } = await sb.from('live_streams').upsert({ host_id: streamId, title: liveTitle, name });
       if (error) throw error;
       ending = false;
       updateViewerCount();
@@ -1008,6 +1078,9 @@ async function goLivePage() {
       $('toggle-mic').style.display = '';
       $('toggle-camera').style.display = '';
       $('end-live').style.display = '';
+      $('studio-status').classList.add('live');
+      $('studio-status').textContent = 'Live';
+      $('metric-status').textContent = 'Live';
       $('toggle-mic').textContent = 'Mute microphone';
       $('toggle-camera').textContent = 'Turn camera off';
       const mime = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
@@ -1020,7 +1093,7 @@ async function goLivePage() {
       };
       recorder.start(1000);
       heartbeat = setInterval(async () => {
-        const { error: heartbeatError } = await sb.from('live_streams').upsert({ host_id: user.id, title: liveTitle, name });
+        const { error: heartbeatError } = await sb.from('live_streams').upsert({ host_id: streamId, title: liveTitle, name });
         if (heartbeatError) showError(heartbeatError);
       }, 15000);
     } catch (error) {
@@ -1070,9 +1143,14 @@ async function watchLivePage(hostId) {
   const name = await myName();
   app.innerHTML = `<h2>${esc(data.title)} <span class="tag" style="background:#e11d48">LIVE</span></h2>
     <p class="dim">${esc(data.name)} · <span id="live-viewers">Connecting...</span></p>
-    <video id="live-player" autoplay playsinline controls style="max-width:100%;max-height:70vh"></video>
-    <p id="live-status" class="dim">Connecting to the stream...</p>
-    <div id="pop" class="pop"></div>${chatHtml()}`;
+    <div class="live-layout">
+      <div class="live-main">
+        <video id="live-player" autoplay playsinline controls></video>
+        <p id="live-status" class="dim">Connecting to the stream...</p>
+        <div id="pop" class="pop"></div>
+      </div>
+      <aside class="live-chat">${chatHtml()}</aside>
+    </div>`;
   const status = document.getElementById('live-status');
   const viewerCount = document.getElementById('live-viewers');
   let pc;
