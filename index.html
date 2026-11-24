@@ -799,45 +799,354 @@ function livePage() {
   onLeave(() => clearInterval(timer));
 }
 
+function waitForLiveChannel(channel) {
+  return new Promise((resolve, reject) => {
+    channel.subscribe(state => {
+      if (state === 'SUBSCRIBED') resolve();
+      else if (state === 'CHANNEL_ERROR' || state === 'TIMED_OUT' || state === 'CLOSED') {
+        reject(new Error(`Live connection failed (${state}).`));
+      }
+    });
+  });
+}
+
+async function sendLiveEvent(channel, event, payload) {
+  const result = await channel.send({ type: 'broadcast', event, payload });
+  if (result !== 'ok') throw new Error(`Could not send live ${event} signal (${result}).`);
+}
+
 async function goLivePage() {
-  app.innerHTML = `<h2>Go live</h2><video id="preview" autoplay muted playsinline></video>
-    <input id="live-title" placeholder="Stream title" style="width:260px">
-    <button id="start-live">Start live</button>
-    <button id="end-live" style="display:none;background:#e11d48">End stream</button>
-    <p id="live-msg" class="err"></p>`;
-  let stream = null;
+  app.innerHTML = `<h2>Go live</h2>
+    <video id="preview" autoplay muted playsinline></video>
+    <div><input id="live-title" placeholder="Stream title" style="width:260px">
+      <button id="start-live">Start live</button>
+      <button id="toggle-mic" style="display:none"></button>
+      <button id="toggle-camera" style="display:none"></button>
+      <button id="end-live" style="display:none;background:#e11d48">End stream</button>
+    </div>
+    <p id="live-viewers" class="dim"></p>
+    <p id="live-msg" class="err"></p>
+    <div id="pop" class="pop"></div>${chatHtml()}`;
+  let stream = null, channel = null, recorder = null, heartbeat = null, replayChunks = [];
+  let replayPromise = Promise.resolve(), replayError = null, replaySaved = false;
+  let startedAt = 0, ending = false, openReplay = false;
+  const peers = new Map();
+  const $ = id => document.getElementById(id);
   const name = await myName();
-  document.getElementById('start-live').onclick = async () => {
-    const title = document.getElementById('live-title').value.trim() || 'Live stream';
+  const titleInput = $('live-title');
+  const title = () => titleInput.value.trim() || 'Live stream';
+  const showError = error => {
+    const msg = $('live-msg');
+    if (msg) msg.textContent = error.message || String(error);
+  };
+  const updateViewerCount = () => {
+    const count = Object.values(channel?.presenceState() || {}).flat()
+      .filter(presence => presence.role === 'viewer').length;
+    const el = $('live-viewers');
+    if (el) el.textContent = `${count} viewer${count === 1 ? '' : 's'}`;
+  };
+  const saveReplay = async () => {
+    if (!recorder || replaySaved) return;
+    const blob = new Blob(replayChunks, { type: recorder.mimeType || 'video/webm' });
+    if (!blob.size) return;
+    const replayTitle = title();
+    const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+    const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
+    const upload = await sb.storage.from('videos').upload(path, blob, { contentType: blob.type.split(';')[0] });
+    if (upload.error) throw upload.error;
+    const { data, error } = await sb.from('videos').insert({
+      channel_id: user.id,
+      title: replayTitle,
+      video_path: path,
+      duration_seconds: Math.max((Date.now() - startedAt) / 1000, 0.1),
+      was_live: true
+    }).select('id').single();
+    if (error) {
+      const { error: removeError } = await sb.storage.from('videos').remove([path]);
+      if (removeError) throw new Error(`${error.message} (Replay cleanup failed: ${removeError.message})`);
+      throw error;
+    }
+    replaySaved = true;
+    const msg = $('live-msg');
+    if (msg) {
+      msg.className = 'dim';
+      msg.textContent = 'Replay saved.';
+    }
+    if (openReplay) location.hash = '#/watch/' + data.id;
+  };
+  const stopLive = async () => {
+    if (ending) return;
+    ending = true;
+    clearInterval(heartbeat);
+    let stopError = null;
+    let replayPending = false, channelRemoved = false;
+    const activeChannel = channel;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true });
-      document.getElementById('preview').srcObject = stream;
-      document.getElementById('start-live').style.display = 'none';
-      document.getElementById('live-title').style.display = 'none';
-      document.getElementById('end-live').style.display = '';
-      const { error } = await sb.from('live_streams').upsert({ host_id: user.id, title, name });
-      if (error) document.getElementById('live-msg').textContent = 'Could not start: ' + error.message;
-      cleanup = () => {
+      if (activeChannel) {
+        try { await sendLiveEvent(activeChannel, 'stream-ended', {}); }
+        catch (error) { showError(error); }
+      }
+      for (const pc of peers.values()) pc.close();
+      peers.clear();
+      if (recorder?.state === 'recording') {
+        const stopped = new Promise(resolve => recorder.addEventListener('stop', resolve, { once: true }));
+        recorder.stop();
         stream?.getTracks().forEach(track => track.stop());
-        sb.from('live_streams').delete().eq('host_id', user.id).then(() => {});
-      };
-      const heartbeat = setInterval(() => sb.from('live_streams').upsert({ host_id: user.id, title, name }), 15000);
-      cleanup = () => { clearInterval(heartbeat); stream?.getTracks().forEach(track => track.stop()); sb.from('live_streams').delete().eq('host_id', user.id).then(() => {}); };
-    } catch (error) {
-      document.getElementById('live-msg').textContent = 'Could not access camera/mic: ' + error.message;
+        await stopped;
+      } else {
+        stream?.getTracks().forEach(track => track.stop());
+      }
+      replayPending = !!recorder && replayChunks.length > 0 && !replaySaved;
+      const { error } = await sb.from('live_streams').delete().eq('host_id', user.id);
+      if (error) stopError ||= error;
+      if (activeChannel) {
+        const status = await sb.removeChannel(activeChannel);
+        channelRemoved = true;
+        if (status !== 'ok' && !stopError) stopError = new Error(`Could not close the live connection (${status}).`);
+      }
+      if (replayPending) {
+        const msg = $('live-msg');
+        if (msg) {
+          msg.className = 'dim';
+          msg.textContent = 'Saving replay...';
+        }
+        if (replayError) {
+          replayError = null;
+          replayPromise = saveReplay().catch(error => { replayError = error; throw error; });
+        }
+        try { await replayPromise; }
+        catch (error) { replayError = error; stopError ||= error; showError(error); }
+      }
+    } finally {
+      stream = null;
+      channel = null;
+      if (activeChannel && !channelRemoved) {
+        const status = await sb.removeChannel(activeChannel);
+        if (status !== 'ok' && !stopError) stopError = new Error(`Could not close the live connection (${status}).`);
+      }
+    }
+    if (stopError) {
+      ending = false;
+      throw stopError;
     }
   };
-  document.getElementById('end-live').onclick = () => { cleanup(); location.hash = '#/live'; };
+  cleanup = () => { stopLive().catch(showError); };
+
+  $('start-live').onclick = async () => {
+    const startButton = $('start-live');
+    startButton.disabled = true;
+    ending = false;
+    replayPromise = Promise.resolve();
+    replayError = null;
+    replaySaved = false;
+    replayChunks = [];
+    recorder = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { height: 480 }, audio: true });
+      $('preview').srcObject = stream;
+      const ice = await getIce();
+      channel = sb.channel('live-' + user.id, {
+        config: { broadcast: { self: false }, presence: { key: user.id } }
+      });
+      channel
+        .on('broadcast', { event: 'viewer-join' }, async ({ payload }) => {
+          if (!payload?.viewerId || peers.has(payload.viewerId) || !stream) return;
+          try {
+            const pc = new RTCPeerConnection(ice);
+            peers.set(payload.viewerId, pc);
+            stream.getTracks().forEach(track => pc.addTrack(track, stream));
+            pc.onicecandidate = event => {
+              if (event.candidate) sendLiveEvent(channel, 'ice', {
+                to: payload.viewerId, from: user.id, candidate: event.candidate
+              }).catch(showError);
+            };
+            pc.onconnectionstatechange = () => {
+              if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+                pc.close();
+                peers.delete(payload.viewerId);
+              }
+            };
+            await pc.setLocalDescription();
+            await sendLiveEvent(channel, 'offer', {
+              to: payload.viewerId, from: user.id, description: pc.localDescription
+            });
+          } catch (error) {
+            showError(error);
+            peers.get(payload.viewerId)?.close();
+            peers.delete(payload.viewerId);
+          }
+        })
+        .on('broadcast', { event: 'answer' }, async ({ payload }) => {
+          if (payload?.to !== user.id) return;
+          const pc = peers.get(payload.from);
+          if (!pc) return;
+          try {
+            await pc.setRemoteDescription(payload.description);
+            await flushIce(pc);
+          } catch (error) { showError(error); }
+        })
+        .on('broadcast', { event: 'ice' }, async ({ payload }) => {
+          if (payload?.to !== user.id) return;
+          const pc = peers.get(payload.from);
+          if (!pc) return;
+          try { await addIce(pc, payload.candidate); }
+          catch (error) { showError(error); }
+        })
+        .on('presence', { event: 'sync' }, updateViewerCount);
+      wireChat(channel, name);
+      await waitForLiveChannel(channel);
+      const trackStatus = await channel.track({ role: 'host', name });
+      if (trackStatus !== 'ok') throw new Error(`Could not publish stream presence (${trackStatus}).`);
+      startedAt = Date.now();
+      const liveTitle = title();
+      const { error } = await sb.from('live_streams').upsert({ host_id: user.id, title: liveTitle, name });
+      if (error) throw error;
+      ending = false;
+      updateViewerCount();
+      $('live-title').disabled = true;
+      startButton.style.display = 'none';
+      $('toggle-mic').style.display = '';
+      $('toggle-camera').style.display = '';
+      $('end-live').style.display = '';
+      $('toggle-mic').textContent = 'Mute microphone';
+      $('toggle-camera').textContent = 'Turn camera off';
+      const mime = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+        .find(type => MediaRecorder.isTypeSupported(type));
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 1000000 } : { videoBitsPerSecond: 1000000 });
+      replayChunks = [];
+      recorder.ondataavailable = event => { if (event.data.size) replayChunks.push(event.data); };
+      recorder.onstop = () => {
+        replayPromise = saveReplay().catch(error => { replayError = error; showError(error); throw error; });
+      };
+      recorder.start(1000);
+      heartbeat = setInterval(async () => {
+        const { error: heartbeatError } = await sb.from('live_streams').upsert({ host_id: user.id, title: liveTitle, name });
+        if (heartbeatError) showError(heartbeatError);
+      }, 15000);
+    } catch (error) {
+      showError(error);
+      try { await stopLive(); }
+      catch (stopError) { showError(stopError); }
+      startButton.disabled = false;
+    }
+  };
+  $('toggle-mic').onclick = () => {
+    const track = stream?.getAudioTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    $('toggle-mic').textContent = track.enabled ? 'Mute microphone' : 'Unmute microphone';
+  };
+  $('toggle-camera').onclick = () => {
+    const track = stream?.getVideoTracks()[0];
+    if (!track) return;
+    track.enabled = !track.enabled;
+    $('toggle-camera').textContent = track.enabled ? 'Turn camera off' : 'Turn camera on';
+  };
+  $('end-live').onclick = async () => {
+    $('end-live').disabled = true;
+    openReplay = true;
+    try {
+      await stopLive();
+      if (!location.hash.startsWith('#/watch/')) location.hash = '#/live';
+    } catch (error) {
+      showError(error);
+      $('end-live').disabled = false;
+    }
+  };
 }
 
 async function watchLivePage(hostId) {
   app.innerHTML = `<h2>🔴 Live stream</h2><p class="dim">Connecting to this broadcaster...</p><p id="live-status" class="err"></p>`;
-  const { data } = await sb.from('live_now').select('*').eq('host_id', hostId).maybeSingle();
+  const { data, error } = await sb.from('live_now').select('*').eq('host_id', hostId).maybeSingle();
+  if (error) {
+    document.getElementById('live-status').textContent = `Could not load this stream: ${error.message}`;
+    return;
+  }
   if (!data) {
     document.getElementById('live-status').textContent = 'This stream is no longer live.';
-  } else {
-    app.innerHTML = `<h2>${esc(data.title)}</h2><p class="dim">${esc(data.name)}</p><p class="dim">Live video playback requires the broadcaster and viewer to support WebRTC on the same network.</p>`;
+    return;
   }
+  const viewerId = crypto.randomUUID();
+  const name = await myName();
+  app.innerHTML = `<h2>${esc(data.title)} <span class="tag" style="background:#e11d48">LIVE</span></h2>
+    <p class="dim">${esc(data.name)} · <span id="live-viewers">Connecting...</span></p>
+    <video id="live-player" autoplay playsinline controls style="max-width:100%;max-height:70vh"></video>
+    <p id="live-status" class="dim">Connecting to the stream...</p>
+    <div id="pop" class="pop"></div>${chatHtml()}`;
+  const status = document.getElementById('live-status');
+  const viewerCount = document.getElementById('live-viewers');
+  let pc;
+  let channel;
+  let sawHost = false;
+  try {
+    pc = new RTCPeerConnection(await getIce());
+    pc.ontrack = event => {
+      const player = document.getElementById('live-player');
+      if (player && event.streams[0]) {
+        player.srcObject = event.streams[0];
+        player.play().then(() => {
+          status.textContent = 'You are watching live.';
+        }).catch(() => {
+          status.textContent = 'Stream connected. Press play to start watching.';
+        });
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') status.textContent = 'The live video connection failed. Try reloading the stream.';
+      else if (pc.connectionState === 'disconnected') status.textContent = 'Connection interrupted; waiting to reconnect...';
+    };
+  } catch (error) {
+    status.textContent = `Live video is unavailable: ${error.message}`;
+  }
+  const updatePresence = () => {
+    const presence = Object.values(channel.presenceState()).flat();
+    const hostOnline = presence.some(item => item.role === 'host');
+    const count = presence.filter(item => item.role === 'viewer').length;
+    viewerCount.textContent = `${count} viewer${count === 1 ? '' : 's'}`;
+    if (sawHost && !hostOnline) status.textContent = 'The broadcaster ended the stream.';
+    sawHost ||= hostOnline;
+  };
+  channel = sb.channel('live-' + hostId, {
+    config: { broadcast: { self: false }, presence: { key: viewerId } }
+  });
+  channel
+    .on('broadcast', { event: 'offer' }, async ({ payload }) => {
+      if (payload?.to !== viewerId || !pc) return;
+      try {
+        await pc.setRemoteDescription(payload.description);
+        await flushIce(pc);
+        await pc.setLocalDescription();
+        await sendLiveEvent(channel, 'answer', {
+          to: hostId, from: viewerId, description: pc.localDescription
+        });
+      } catch (error) { status.textContent = `Could not connect to live video: ${error.message}`; }
+    })
+    .on('broadcast', { event: 'ice' }, async ({ payload }) => {
+      if (payload?.to !== viewerId || !pc) return;
+      try { await addIce(pc, payload.candidate); }
+      catch (error) { status.textContent = `Could not connect to live video: ${error.message}`; }
+    })
+    .on('broadcast', { event: 'stream-ended' }, () => {
+      status.textContent = 'The broadcaster ended the stream.';
+      pc.close();
+    })
+    .on('presence', { event: 'sync' }, updatePresence);
+  wireChat(channel, name);
+  try {
+    await waitForLiveChannel(channel);
+    const trackStatus = await channel.track({ role: 'viewer', name });
+    if (trackStatus !== 'ok') throw new Error(`Could not join the viewer list (${trackStatus}).`);
+    await sendLiveEvent(channel, 'viewer-join', { viewerId, name });
+    if (pc) status.textContent = 'Waiting for the broadcaster to connect...';
+    updatePresence();
+  } catch (error) {
+    status.textContent = error.message;
+    pc.close();
+  }
+  onLeave(() => {
+    pc?.close();
+    if (channel) sb.removeChannel(channel);
+  });
 }
 
 /* ---------- Livestream (free, peer-to-peer: video goes straight from streamer to viewers) ---------- */
@@ -866,13 +1175,15 @@ async function myName() {
   return myNameCache;
 }
 async function addIce(pc, cand) {
-  if (pc.remoteDescription) { try { await pc.addIceCandidate(cand); } catch (e) {} } else (pc._q = pc._q || []).push(cand);
+  if (pc.remoteDescription) await pc.addIceCandidate(cand);
+  else (pc._q = pc._q || []).push(cand);
 }
-async function flushIce(pc) { while (pc._q && pc._q.length) { try { await pc.addIceCandidate(pc._q.shift()); } catch (e) {} } }
+async function flushIce(pc) { while (pc._q && pc._q.length) await pc.addIceCandidate(pc._q.shift()); }
 function chatHtml() {
   return `<h3>Live chat</h3><div id="chatlog" style="height:260px;overflow-y:auto;background:#fff;border-radius:14px;padding:10px;box-shadow:0 6px 20px #7873f524;margin-bottom:10px"></div>
     <input id="chattxt" placeholder="Say something" style="width:180px"><button id="chatsend">Send</button>
     <button id="chathl" title="Make your message stand out" style="margin-left:6px">⭐</button>
+    <p id="chat-msg" class="err"></p>
     <div id="hlpanel" style="display:none;background:#fff;border-radius:14px;padding:12px 14px;margin-top:10px;box-shadow:0 6px 20px #7873f524">
       <b>Solve these to make your message stand out:</b>
       <p style="margin:10px 0 4px">10 × 5 = <input id="hl1" inputmode="numeric" style="width:70px;margin:0"></p>
@@ -898,24 +1209,32 @@ function popup(name, text) {
 }
 function wireChat(ch, name) {
   const $ = id => document.getElementById(id);
-  const send = hl => {
+  const send = async hl => {
     const t = $('chattxt').value.trim(); if (!t) return false;
-    ch.send({ type: 'broadcast', event: 'chat', payload: { name, text: t.slice(0, 300), hl: !!hl } });
-    addChat(name, t.slice(0, 300), hl); if (hl) popup(name, t.slice(0, 300)); $('chattxt').value = '';
+    const text = t.slice(0, 300);
+    try {
+      const result = await ch.send({ type: 'broadcast', event: 'chat', payload: { name, text, hl: !!hl } });
+      if (result !== 'ok') throw new Error(`Could not send chat message (${result}).`);
+    } catch (error) {
+      $('chat-msg').textContent = error.message || String(error);
+      return false;
+    }
+    $('chat-msg').textContent = '';
+    addChat(name, text, hl); if (hl) popup(name, text); $('chattxt').value = '';
     return true;
   };
-  $('chatsend').onclick = () => send(false);
+  $('chatsend').onclick = () => { send(false); };
   $('chattxt').onkeydown = e => { if (e.key === 'Enter') send(false); };
   $('chathl').onclick = () => {
     const panel = $('hlpanel');
     panel.style.display = panel.style.display === 'none' ? '' : 'none';
     $('hlmsg').textContent = '';
   };
-  $('hlgo').onclick = () => {
+  $('hlgo').onclick = async () => {
     if (!$('chattxt').value.trim()) return $('hlmsg').textContent = 'Type your message first.';
     const ok = $('hl1').value.trim() === '50' && $('hl2').value.trim() === '120' && $('hl3').value.trim() === '60';
     if (!ok) return $('hlmsg').textContent = 'Not quite, try again.';
-    send(true);
+    if (!await send(true)) return;
     ['hl1', 'hl2', 'hl3'].forEach(id => $(id).value = '');
     $('hlpanel').style.display = 'none'; $('hlmsg').textContent = '';
   };
@@ -930,6 +1249,42 @@ function genZChatId() {
 function fmtId(id) {
   const c = id.replace(/\D/g,'');
   return c.replace(/(\d{3})(\d{3})(\d{3})/, '$1-$2-$3');
+}
+
+async function verifyZChatRoom(roomId) {
+  const channel = sb.channel('zchat-' + roomId, {
+    config: { presence: { key: 'verify-' + (user?.id || Math.random().toString(36).slice(2)) } }
+  });
+  let timer;
+  try {
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (valid, error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(valid);
+      };
+      const checkForHost = () => {
+        const hasHost = Object.values(channel.presenceState()).flat()
+          .some(item => item.role === 'host');
+        if (hasHost) finish(true);
+      };
+      timer = setTimeout(() => finish(false), 5000);
+      channel
+        .on('presence', { event: 'sync' }, checkForHost)
+        .subscribe(state => {
+          if (state === 'SUBSCRIBED') checkForHost();
+          else if (state === 'CHANNEL_ERROR' || state === 'TIMED_OUT' || state === 'CLOSED') {
+            finish(false, new Error(`Could not verify the meeting ID (${state}).`));
+          }
+        });
+    });
+  } finally {
+    clearTimeout(timer);
+    await sb.removeChannel(channel);
+  }
 }
 
 async function zChatPage(roomId) {
@@ -1012,6 +1367,30 @@ async function zChatJoin(roomId, displayName, isHost = false) {
       if (n) zChatJoin(roomId, n, isHost);
     };
     return;
+  }
+
+  if (!isHost) {
+    app.innerHTML = `<div style="max-width:360px;margin:60px auto;text-align:center">
+      <h2>📹 ZChat</h2>
+      <p class="dim">Verifying meeting ID...</p>
+    </div>`;
+    try {
+      if (!(await verifyZChatRoom(clean))) {
+        app.innerHTML = `<div style="max-width:360px;margin:60px auto;text-align:center">
+          <h2>📹 ZChat</h2>
+          <p class="err">Invalid meeting ID. No active call was found for this code.</p>
+          <a href="#/zchat">Back to ZChat</a>
+        </div>`;
+        return;
+      }
+    } catch (error) {
+      app.innerHTML = `<div style="max-width:360px;margin:60px auto;text-align:center">
+        <h2>📹 ZChat</h2>
+        <p class="err">${esc(error.message || 'Could not verify the meeting ID.')}</p>
+        <a href="#/zchat">Back to ZChat</a>
+      </div>`;
+      return;
+    }
   }
 
   const ice  = await getIce();
